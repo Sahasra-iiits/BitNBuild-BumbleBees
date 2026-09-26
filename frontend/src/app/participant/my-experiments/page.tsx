@@ -1,11 +1,5 @@
-import Link from 'next/link';
+import { redirect } from 'next/navigation';
 
 export default function MyExperimentsPage() {
-  return (
-    <div className="p-8 max-w-4xl mx-auto">
-      <h1 className="text-3xl font-bold mb-4">My Experiments</h1>
-      <p className="text-slate-600 mb-8">This page is currently under construction.</p>
-      <Link href="/" className="text-blue-600 hover:underline">&larr; Back to Home</Link>
-    </div>
-  );
+  redirect('/participant/history');
 }

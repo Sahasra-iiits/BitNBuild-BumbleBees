@@ -2,7 +2,7 @@
 import Link from 'next/link';
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { useAuth } from '@/lib/context/AuthContext';
+import { homeForRole, useAuth } from '@/lib/context/AuthContext';
 import { ApiRequestError } from '@/lib/api/client';
 
 export default function LoginPage() {
@@ -21,14 +21,12 @@ export default function LoginPage() {
 
     try {
       const user = await login(email, password);
-      // Route by role
-      if (user.role === 'RESEARCHER') {
-        router.push('/researcher/experiments');
-      } else if (user.role === 'PARTICIPANT') {
-        router.push('/participant');
-      } else {
-        router.push('/');
-      }
+      // Only same-site paths are accepted as a return target (no open redirect).
+      const next = new URLSearchParams(window.location.search).get('next');
+      const safeNext = next && next.startsWith('/') && !next.startsWith('//') ? next : null;
+      const home = homeForRole(user.role);
+      const allowedNext = safeNext && (user.role === 'PARTICIPANT' ? safeNext.startsWith('/participant') : safeNext.startsWith('/researcher'));
+      router.push(allowedNext ? safeNext : home);
     } catch (err) {
       if (err instanceof ApiRequestError) {
         if (err.code === 'UNAUTHORIZED') {

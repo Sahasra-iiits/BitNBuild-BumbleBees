@@ -16,6 +16,7 @@ import { sessionsRouter } from './modules/sessions/sessions.router';
 import { qualityRouter } from './modules/quality/quality.router';
 import { resultsRouter } from './modules/results/results.router';
 import { exportsRouter } from './modules/exports/exports.router';
+import { assetsRouter } from './modules/assets/assets.router';
 
 export const apiRouter = Router();
 
@@ -41,6 +42,8 @@ apiRouter.use('/experiments', versionsRouter);
 apiRouter.use('/consent', consentRouter);
 // Sessions: handles both /sessions/:id/... AND /experiments/:id/sessions via the router
 apiRouter.use('/', sessionsRouter);
+// Assets: /experiments/:id/assets and /assets/:assetId/content
+apiRouter.use('/', assetsRouter);
 apiRouter.use('/quality', qualityRouter);
 apiRouter.use('/results', resultsRouter);
 apiRouter.use('/exports', exportsRouter);

@@ -2,143 +2,91 @@
 // SynapseLab — Quality Router
 // ==============================================================================
 
-import { Router, Request, Response, NextFunction } from 'express';
+import { Router } from 'express';
 import { z } from 'zod';
 import { QualityService } from './quality.service';
+import { RATING } from '../../config/constants';
 import { validate } from '../../common/middleware/validate';
 import { authenticate } from '../../common/middleware/authenticate';
 import { requireResearcher, requireParticipant } from '../../common/middleware/authorize';
+import { getParam, validatedQuery } from '../../common/utils/request-helpers';
+import { route } from '../../common/utils/route';
 
 export const qualityRouter = Router();
 
 const createFlagSchema = z.object({
-  participantId: z.string().uuid(),
-  experimentId: z.string().uuid(),
-  sessionId: z.string().uuid().optional(),
-  reason: z.string().min(1).max(500),
-  description: z.string().max(5000).optional(),
-  affectedTrials: z.array(z.string().uuid()).optional(),
+  sessionId: z.string().uuid(),
+  reason: z.string().trim().min(1).max(500),
+  description: z.string().trim().min(10, 'Describe the evidence (at least 10 characters)').max(5000),
+  affectedTrials: z.array(z.string().min(1).max(100)).max(1000).optional(),
   evidence: z.record(z.unknown()).optional(),
 });
 
 const reviewFlagSchema = z.object({
-  status: z.enum(['REVIEWED', 'DISMISSED', 'CONFIRMED']),
-  ratingDelta: z.number().min(-50).max(50).optional(),
+  status: z.enum(['CONFIRMED', 'DISMISSED']),
+  ratingPenalty: z.number().int().min(0).max(RATING.MAX_RESEARCHER_PENALTY).optional(),
+  note: z.string().max(2000).optional(),
 });
 
 const excludeDataSchema = z.object({
   sessionId: z.string().uuid(),
-  responseIds: z.array(z.string().uuid()).optional(),
-  reason: z.string().min(1).max(500),
+  responseIds: z.array(z.string().uuid()).max(10000).optional(),
+  reason: z.string().trim().min(1).max(500),
 });
 
 const flagIdParam = z.object({ id: z.string().uuid() });
 const experimentIdParam = z.object({ experimentId: z.string().uuid() });
+const listFlagsQuery = z.object({
+  status: z.enum(['OPEN', 'REVIEWED', 'DISMISSED', 'CONFIRMED']).optional(),
+  page: z.coerce.number().int().min(1).optional(),
+  limit: z.coerce.number().int().min(1).max(100).optional(),
+});
 
-/**
- * POST /quality/flags — Create a quality flag
- */
 qualityRouter.post(
   '/flags',
   authenticate,
   requireResearcher,
   validate({ body: createFlagSchema }),
-  async (req: Request, res: Response, next: NextFunction) => {
-    try {
-      const flag = await QualityService.createFlag(
-        req.user!.researcherProfileId!,
-        req.body,
-        req.user!.userId
-      );
-      res.status(201).json(flag);
-    } catch (error) {
-      next(error);
-    }
-  }
+  route(async (req, res) => {
+    res.status(201).json(await QualityService.createFlag(req.user!.researcherProfileId!, req.body, req.user!.userId));
+  })
 );
 
-/**
- * POST /quality/flags/:id/review — Review a quality flag
- */
 qualityRouter.post(
   '/flags/:id/review',
   authenticate,
   requireResearcher,
   validate({ params: flagIdParam, body: reviewFlagSchema }),
-  async (req: Request, res: Response, next: NextFunction) => {
-    try {
-      const result = await QualityService.reviewFlag(
-        (req.params as any).id,
-        req.user!.researcherProfileId!,
-        req.body,
-        req.user!.userId
-      );
-      res.json(result);
-    } catch (error) {
-      next(error);
-    }
-  }
+  route(async (req, res) => {
+    res.json(await QualityService.reviewFlag(getParam(req, 'id'), req.user!.researcherProfileId!, req.body, req.user!.userId));
+  })
 );
 
-/**
- * GET /quality/flags/experiments/:experimentId — List flags for an experiment
- */
 qualityRouter.get(
   '/flags/experiments/:experimentId',
   authenticate,
   requireResearcher,
-  validate({ params: experimentIdParam }),
-  async (req: Request, res: Response, next: NextFunction) => {
-    try {
-      const result = await QualityService.listFlags(
-        (req.params as any).experimentId,
-        req.user!.researcherProfileId!,
-        req.query
-      );
-      res.json(result);
-    } catch (error) {
-      next(error);
-    }
-  }
+  validate({ params: experimentIdParam, query: listFlagsQuery }),
+  route(async (req, res) => {
+    res.json(await QualityService.listFlags(getParam(req, 'experimentId'), req.user!.researcherProfileId!, validatedQuery(req)));
+  })
 );
 
-/**
- * GET /quality/participants/me/rating — Get participant's own rating
- */
 qualityRouter.get(
   '/participants/me/rating',
   authenticate,
   requireParticipant,
-  async (req: Request, res: Response, next: NextFunction) => {
-    try {
-      const result = await QualityService.getParticipantRating(
-        req.user!.participantProfileId!
-      );
-      res.json(result);
-    } catch (error) {
-      next(error);
-    }
-  }
+  route(async (req, res) => {
+    res.json(await QualityService.getParticipantRating(req.user!.participantProfileId!));
+  })
 );
 
-/**
- * POST /quality/exclude — Exclude data (non-destructive)
- */
 qualityRouter.post(
   '/exclude',
   authenticate,
   requireResearcher,
   validate({ body: excludeDataSchema }),
-  async (req: Request, res: Response, next: NextFunction) => {
-    try {
-      const result = await QualityService.excludeData(
-        req.user!.researcherProfileId!,
-        req.body,
-        req.user!.userId
-      );
-      res.json(result);
-    } catch (error) {
-      next(error);
-    }
-  }
+  route(async (req, res) => {
+    res.json(await QualityService.excludeData(req.user!.researcherProfileId!, req.body, req.user!.userId));
+  })
 );

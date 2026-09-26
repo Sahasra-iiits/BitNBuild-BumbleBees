@@ -17,7 +17,11 @@ module.exports = {
   ],
   coverageDirectory: 'coverage',
   coverageReporters: ['text', 'lcov', 'clover'],
-  setupFilesAfterSetup: [],
+  setupFiles: ['<rootDir>/tests/setup-env.ts'],
+  // Suites share one database; running them in parallel makes attempt-limit and
+  // rating assertions race each other.
+  maxWorkers: 1,
+  testTimeout: 30000,
   transform: {
     '^.+\\.ts$': ['ts-jest', { tsconfig: 'tsconfig.json' }],
   },

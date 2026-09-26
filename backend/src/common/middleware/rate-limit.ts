@@ -13,6 +13,9 @@ export const generalLimiter = rateLimit({
   max: env.RATE_LIMIT_MAX_GENERAL,
   standardHeaders: true,
   legacyHeaders: false,
+  // Participant event batches have their own limiter; counting them here as well
+  // could lock a participant out of completing an experiment mid-session.
+  skip: (req) => /\/sessions\/[^/]+\/events\/batch$/.test(req.path),
   message: {
     error: {
       code: 'RATE_LIMITED',

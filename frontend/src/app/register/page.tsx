@@ -2,14 +2,14 @@
 import Link from 'next/link';
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { authApi } from '@/lib/api/auth';
-import { tokenStore } from '@/lib/api/client';
 import { ApiRequestError } from '@/lib/api/client';
+import { homeForRole, useAuth } from '@/lib/context/AuthContext';
 
 type Role = 'RESEARCHER' | 'PARTICIPANT';
 
 export default function RegisterPage() {
   const router = useRouter();
+  const { register } = useAuth();
   const [role, setRole] = useState<Role>('RESEARCHER');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -28,21 +28,15 @@ export default function RegisterPage() {
     setError(null);
 
     try {
-      const result = await authApi.register({
+      // Registering through the auth context signs the user in for the whole app.
+      const user = await register({
         email,
         password,
         role,
         ...(role === 'RESEARCHER' ? { researcherProfile: { institution } } : {}),
-        ...(role === 'PARTICIPANT' ? { participantProfile: { age: parseInt(age) } } : {}),
+        ...(role === 'PARTICIPANT' ? { participantProfile: { age: parseInt(age, 10) } } : {}),
       });
-
-      tokenStore.set(result.accessToken);
-
-      if (result.user.role === 'RESEARCHER') {
-        router.push('/researcher/experiments');
-      } else {
-        router.push('/participant');
-      }
+      router.push(homeForRole(user.role));
     } catch (err) {
       if (err instanceof ApiRequestError) {
         if (err.code === 'CONFLICT' || err.statusCode === 409) {

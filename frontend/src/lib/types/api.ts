@@ -1,13 +1,10 @@
 // ==============================================================================
-// CogniScale Frontend — API Types (synchronized with backend OpenAPI)
+// API types — mirror the backend responses exactly.
 // ==============================================================================
-// Source of truth: backend OpenAPI spec + Prisma schema
-// All enums match backend UPPERCASE conventions exactly.
-// DO NOT manually calculate rating/reward changes here.
+// The experiment definition itself (trials, elements, responses) is defined once in
+// src/shared/experiment and shared with the backend.
 
-// =============================================================================
-// Enums (match backend Prisma/OpenAPI exactly)
-// =============================================================================
+import type { ExperimentDefinition, IssueSeverity, TrialResponsePayload, ValidationIssue } from '@/shared/experiment';
 
 export type UserRole = 'RESEARCHER' | 'PARTICIPANT' | 'ADMIN';
 export type ExperimentStatus = 'DRAFT' | 'PUBLISHED' | 'PAUSED' | 'CLOSED' | 'ARCHIVED';
@@ -18,9 +15,26 @@ export type QualityFlagStatus = 'OPEN' | 'REVIEWED' | 'DISMISSED' | 'CONFIRMED';
 export type ExportFormat = 'CSV' | 'XLSX' | 'JSON';
 export type ExportStatus = 'QUEUED' | 'PROCESSING' | 'READY' | 'FAILED' | 'EXPIRED';
 
-// =============================================================================
-// Auth
-// =============================================================================
+// Auth ------------------------------------------------------------------------
+
+export interface ResearcherProfile {
+  id: string;
+  userId: string;
+  institution: string;
+  department?: string | null;
+  bio?: string | null;
+}
+
+export interface ParticipantProfile {
+  id: string;
+  pseudonymousId: string;
+  age: number;
+  gender?: string | null;
+  educationLevel?: string | null;
+  qualityRating: number;
+  totalRewardPoints: number;
+  completedSessionsCount: number;
+}
 
 export interface AuthUser {
   id: string;
@@ -28,86 +42,78 @@ export interface AuthUser {
   role: UserRole;
   isEmailVerified: boolean;
   isActive: boolean;
-  researcherProfile?: ResearcherProfile;
-  participantProfile?: ParticipantProfile;
   createdAt: string;
-}
-
-export interface ResearcherProfile {
-  id: string;
-  userId: string;
-  institution: string;
-  department?: string;
-  bio?: string;
-}
-
-export interface ParticipantProfile {
-  id: string;
-  userId: string;
-  pseudonymousId: string;
-  age: number;
-  gender?: string;
-  educationLevel?: string;
-  qualityRating: number;
-  totalRewardPoints: number;
-  completedSessionsCount: number;
+  researcherProfile: ResearcherProfile | null;
+  participantProfile: ParticipantProfile | null;
 }
 
 export interface AuthResponse {
   user: AuthUser;
   accessToken: string;
-  refreshToken?: string; // Also set as HTTP-only cookie
 }
 
 export interface RegisterRequest {
   email: string;
   password: string;
   role: 'RESEARCHER' | 'PARTICIPANT';
-  researcherProfile?: {
-    institution: string;
-    department?: string;
-    bio?: string;
-  };
-  participantProfile?: {
-    age: number;
-    gender?: string;
-    educationLevel?: string;
-  };
+  researcherProfile?: { institution: string; department?: string };
+  participantProfile?: { age: number; gender?: string; educationLevel?: string };
 }
 
-export interface LoginRequest {
-  email: string;
-  password: string;
+// Experiments -----------------------------------------------------------------
+
+export interface EligibilityRule {
+  id: string;
+  ruleType: 'AGE_RANGE' | 'RATING_RANGE' | 'AVAILABILITY_WINDOW' | string;
+  minAge: number | null;
+  maxAge: number | null;
+  minRating: number | null;
+  maxRating: number | null;
+  availabilityStart: string | null;
+  availabilityEnd: string | null;
 }
 
-// =============================================================================
-// Experiments
-// =============================================================================
+export type EligibilityRuleInput =
+  | { ruleType: 'AGE_RANGE'; minAge?: number; maxAge?: number }
+  | { ruleType: 'RATING_RANGE'; minRating?: number; maxRating?: number }
+  | { ruleType: 'AVAILABILITY_WINDOW'; availabilityStart?: string; availabilityEnd?: string };
+
+export interface QualityRules {
+  fastResponses: { enabled: boolean; thresholdMs: number; maxFraction: number; penalty: number };
+  identicalResponses: { enabled: boolean; runLength: number; penalty: number };
+  missedResponses: { enabled: boolean; maxFraction: number; penalty: number };
+}
+
+export interface VersionSummary {
+  id: string;
+  versionNumber: number;
+  publishedAt: string | null;
+  createdAt: string;
+}
 
 export interface Experiment {
   id: string;
   researcherId: string;
   title: string;
-  description?: string;
-  instructions?: string;
+  description: string | null;
+  instructions: string | null;
   status: ExperimentStatus;
   visibility: ExperimentVisibility;
   rewardPoints: number;
   attemptPolicy: AttemptPolicy;
   maxAttempts: number;
+  qualityRules: QualityRules;
+  eligibilityRules: EligibilityRule[];
   createdAt: string;
   updatedAt: string;
-  // Computed/joined fields (may be present in list responses)
-  _count?: {
-    sessions: number;
-  };
-  eligibilityRules?: EligibilityRule[];
-  researcher?: {
-    institution: string;
-    user: {
-      email: string;
-    }
-  };
+  _count?: { sessions: number; versions?: number };
+}
+
+export interface ExperimentDetail extends Experiment {
+  versions: VersionSummary[];
+  draftRevision: number;
+  draftUpdatedAt: string | null;
+  hasUnpublishedChanges: boolean;
 }
 
 export interface CreateExperimentRequest {
@@ -116,365 +122,289 @@ export interface CreateExperimentRequest {
   instructions?: string;
   visibility?: ExperimentVisibility;
   rewardPoints?: number;
+}
+
+export interface UpdateExperimentRequest {
+  title?: string;
+  description?: string;
+  instructions?: string;
+  visibility?: ExperimentVisibility;
+  rewardPoints?: number;
   attemptPolicy?: AttemptPolicy;
   maxAttempts?: number;
+  eligibilityRules?: EligibilityRuleInput[];
+  qualityRules?: QualityRules;
 }
 
-export interface UpdateExperimentRequest extends Partial<CreateExperimentRequest> {}
+export interface DraftResponse {
+  definition: ExperimentDefinition;
+  revision: number;
+  updatedAt: string | null;
+  source: 'draft' | 'published_version' | 'empty';
+}
 
-// =============================================================================
-// Experiment Versions (immutable after publish)
-// =============================================================================
+export interface SaveDraftResponse {
+  revision: number;
+  updatedAt: string;
+}
 
-export interface ExperimentVersion {
-  id: string;
-  experimentId: string;
-  versionNumber: number;
-  configSnapshot: ExperimentConfigSnapshot;
+export interface DraftValidation {
+  issues: ValidationIssue[];
+  counts: Record<IssueSeverity, number>;
+  canPublish: boolean;
+}
+
+export interface PublishResponse {
+  experiment: Experiment;
+  version: { id: string; versionNumber: number; created: boolean };
+  warnings: ValidationIssue[];
+}
+
+export interface VersionListItem extends VersionSummary {
   configHash: string;
-  publishedAt?: string;
-  createdAt: string;
-  trials?: ExperimentTrial[];
-  logicRules?: LogicRule[];
-  randomization?: RandomizationConfig[];
+  trialCount: number;
+  _count: { trials: number; sessions: number };
 }
 
-export interface ExperimentConfigSnapshot {
-  trials: ExperimentTrial[];
-  logicRules: LogicRule[];
-  randomization: RandomizationConfig[];
-}
-
-export interface ExperimentTrial {
-  id: string;
-  versionId: string;
-  sequenceOrder: number;
-  trialType: string;
-  name?: string;
-  configuration: Record<string, unknown>;
-  stimulusConfig?: Record<string, unknown>;
-  durationMs?: number;
-  timeoutMs?: number;
-  elements?: TrialElement[];
-}
-
-export interface TrialElement {
-  id: string;
-  trialId: string;
-  elementType: string;
-  configuration: Record<string, unknown>;
-  sequenceOrder: number;
-}
-
-export interface LogicRule {
-  id: string;
-  versionId: string;
-  sourceTrialId?: string;
-  targetTrialId?: string;
-  conditionType: string;
-  condition: Record<string, unknown>;
-  priority: number;
-}
-
-export interface RandomizationConfig {
-  id: string;
-  versionId: string;
-  strategy: string;
-  seed?: string;
-  configuration: Record<string, unknown>;
-}
-
-export interface CreateVersionRequest {
-  trials?: Array<{
-    sequenceOrder: number;
-    trialType: string;
-    name?: string;
-    configuration: Record<string, unknown>;
-    stimulusConfig?: Record<string, unknown>;
-    durationMs?: number;
-    timeoutMs?: number;
-    elements?: Array<{
-      elementType: string;
-      configuration: Record<string, unknown>;
-      sequenceOrder: number;
-    }>;
-  }>;
-  logicRules?: Array<{
-    sourceTrialId?: string;
-    targetTrialId?: string;
-    conditionType: string;
-    condition: Record<string, unknown>;
-    priority?: number;
-  }>;
-  randomization?: Array<{
-    strategy: string;
-    seed?: string;
-    configuration: Record<string, unknown>;
-  }>;
-}
-
-// =============================================================================
-// Eligibility
-// =============================================================================
-
-export interface EligibilityRule {
-  id: string;
+export interface VersionDetail extends VersionSummary {
   experimentId: string;
-  ruleType: string;
-  minAge?: number;
-  maxAge?: number;
-  minRating?: number;
-  maxRating?: number;
-  maxAttempts?: number;
-  availabilityStart?: string;
-  availabilityEnd?: string;
-  configuration?: Record<string, unknown>;
+  definition: ExperimentDefinition;
+}
+
+/** What participants are allowed to see about an experiment. */
+export interface PublicExperiment {
+  id: string;
+  title: string;
+  description: string | null;
+  instructions?: string | null;
+  status?: ExperimentStatus;
+  rewardPoints: number;
+  attemptPolicy: AttemptPolicy;
+  maxAttempts: number;
+  researcher: { institution: string } | null;
+  currentVersion?: { id: string; versionNumber: number } | null;
 }
 
 export interface EligibilityResult {
   eligible: boolean;
+  code?: string;
   reason?: string;
-  code?: string; // e.g., RATING_TOO_LOW, AGE_NOT_MET, ATTEMPT_LIMIT_REACHED
+  attempts?: { completed: number; maxAttempts: number; activeSessionId: string | null; canStartNew: boolean };
 }
 
-// =============================================================================
-// Sessions
-// =============================================================================
+// Assets ----------------------------------------------------------------------
 
-export interface ExperimentSession {
+export interface ExperimentAsset {
+  id: string;
+  experimentId: string;
+  kind: 'IMAGE' | 'AUDIO';
+  mimeType: string;
+  sizeBytes: number;
+  originalName: string;
+  sha256: string;
+  createdAt: string;
+}
+
+// Sessions --------------------------------------------------------------------
+
+export interface SessionInfo {
   id: string;
   experimentId: string;
   versionId: string;
-  participantId: string;
-  pseudonymousRef: string;
-  consentId?: string;
   status: SessionStatus;
   startedAt: string;
-  completedAt?: string;
-  qualityStatus?: string;
-  // Full version config returned with session start for local execution
-  version?: ExperimentVersion;
+  completedAt: string | null;
 }
 
-export interface StartSessionRequest {
-  consentId?: string;
-  clientMetadata?: Record<string, unknown>;
-  idempotencyKey?: string;
+export interface StartSessionResponse {
+  session: SessionInfo;
+  resumed: boolean;
+  version: { id: string; versionNumber: number; definition: ExperimentDefinition };
+  progress: { recordedTrialIds: string[] };
 }
-
-export interface StartSessionResponse extends ExperimentSession {
-  version: ExperimentVersion; // Always returned for experiment runner
-}
-
-// =============================================================================
-// Trial Response Events (for batch ingestion)
-// =============================================================================
 
 export interface BatchEvent {
-  eventId: string; // Client-generated UUID for idempotency
+  eventId: string;
   trialId: string;
   trialSequence: number;
-  condition?: string;
-  stimulusId?: string;
-  stimulusDisplayTimestamp?: number; // High-precision ms since epoch (performance.now() base)
+  stimulusDisplayTimestamp?: number;
   responseTimestamp?: number;
-  reactionTimeMs?: number; // Client-computed
-  response?: Record<string, unknown>;
-  correct?: boolean;
-  timeout?: boolean;
-  clientEventSequence?: number;
+  reactionTimeMs: number | null;
+  response: {
+    advanceReason: TrialResponsePayload['advanceReason'];
+    elements: Array<{ elementId: string; value: unknown; rtMs: number }>;
+  };
+  clientEventSequence: number;
 }
 
-export interface BatchEventRequest {
-  events: BatchEvent[];
+export interface IngestResult {
+  ingested: number;
+  duplicates: number;
+  total: number;
 }
 
-// =============================================================================
-// Quality
-// =============================================================================
+export interface RatingChange {
+  oldRating: number;
+  newRating: number;
+  delta: number;
+  reason: string;
+}
+
+export interface CompletionOutcome {
+  session: SessionInfo;
+  rewardPoints: number;
+  ratingChanges: RatingChange[];
+  currentRating: number;
+  totalRewardPoints: number;
+  qualityStatus: string | null;
+  qualitySignals: string[];
+}
+
+export interface MySession {
+  id: string;
+  experimentId: string;
+  status: SessionStatus;
+  startedAt: string;
+  completedAt: string | null;
+  qualityStatus: string | null;
+  experiment: { title: string; status: ExperimentStatus };
+  rewardPoints: number;
+  _count: { responses: number };
+}
+
+// Results ---------------------------------------------------------------------
+
+export interface StatSummary {
+  n: number;
+  participants: number;
+  rtCount: number;
+  meanRt: number | null;
+  medianRt: number | null;
+  sdRt: number | null;
+  scoredCount: number;
+  /** Percent 0-100. */
+  accuracy: number | null;
+  timeouts: number;
+}
+
+export interface ResultsResponse {
+  experimentId: string;
+  versionId: string | null;
+  summary: {
+    participants: number;
+    totalSessions: number;
+    completedSessions: number;
+    inProgressSessions: number;
+    excludedSessions: number;
+    abandonedSessions: number;
+    analyzedResponses: number;
+  };
+  conditions: Array<StatSummary & { condition: string }>;
+  trials: Array<StatSummary & { trialKey: string; name: string; condition: string }>;
+  computedAt: string;
+}
+
+export interface SessionListItem {
+  id: string;
+  pseudonymousRef: string;
+  status: SessionStatus;
+  startedAt: string;
+  completedAt: string | null;
+  qualityStatus: string | null;
+  version: { versionNumber: number };
+  qualitySignals: Array<{ signalType: string; severity: string; metadata: Record<string, unknown> | null }>;
+  qualityFlags: Array<{ id: string; status: QualityFlagStatus; reason: string }>;
+  _count: { responses: number };
+}
+
+export interface RawDataRow {
+  id: string;
+  participant: string;
+  sessionId: string;
+  sessionStatus: SessionStatus;
+  versionNumber: number;
+  trialKey: string;
+  trialName: string | null;
+  trialSequence: number;
+  condition: string | null;
+  advanceReason: string | null;
+  responses: Array<{ elementId: string; type: string; display: string; rtMs: number; correct: boolean | null }>;
+  reactionTimeMs: number | null;
+  correct: boolean | null;
+  timeout: boolean;
+  excluded: boolean;
+  exclusionReason: string | null;
+}
+
+export interface RawDataResponse {
+  total: number;
+  limit: number;
+  offset: number;
+  data: RawDataRow[];
+}
+
+// Quality ---------------------------------------------------------------------
 
 export interface QualityFlag {
   id: string;
-  participantId: string;
   experimentId: string;
-  sessionId?: string;
-  researcherId: string;
+  sessionId: string | null;
+  participant: string | null;
   reason: string;
-  description?: string;
-  affectedTrials?: string[];
-  evidence?: Record<string, unknown>;
+  description: string | null;
   status: QualityFlagStatus;
   createdAt: string;
-  reviewedAt?: string;
-  reviewedBy?: string;
-}
-
-export interface CreateQualityFlagRequest {
-  participantId: string;
-  experimentId: string;
-  sessionId?: string;
-  reason: string;
-  description?: string;
-  affectedTrials?: string[];
-  evidence?: Record<string, unknown>;
-}
-
-export interface ReviewFlagRequest {
-  status: 'REVIEWED' | 'DISMISSED' | 'CONFIRMED';
-  ratingDelta?: number;
+  reviewedAt: string | null;
 }
 
 export interface ParticipantRating {
   currentRating: number;
   totalRewardPoints: number;
   completedSessionsCount: number;
-  history: ParticipantRatingEvent[];
+  bounds: { min: number; max: number; default: number };
+  history: Array<{
+    id: string;
+    oldRating: number;
+    delta: number;
+    newRating: number;
+    reason: string;
+    source: string;
+    experimentId: string | null;
+    experimentTitle: string | null;
+    createdAt: string;
+  }>;
 }
 
-export interface ParticipantRatingEvent {
-  id: string;
-  oldRating: number;
-  delta: number;
-  newRating: number;
-  reason: string;
-  source: string;
-  experimentId?: string;
-  createdAt: string;
-}
-
-// =============================================================================
-// Results
-// =============================================================================
-
-export interface AggregateResult {
-  condition: string;
-  n: number;
-  meanRt?: number;
-  medianRt?: number;
-  stdRt?: number;
-  accuracy?: number;
-  errorRate?: number;
-}
-
-export interface ExperimentResultSummary {
-  experimentId: string;
-  totalSessions: number;
-  completedSessions: number;
-  excludedSessions: number;
-  aggregates: AggregateResult[];
-  computedAt: string;
-}
-
-export interface RawTrialResponse {
-  id: string;
-  sessionId: string;
-  trialId: string;
-  eventId: string;
-  trialSequence: number;
-  condition?: string;
-  stimulusId?: string;
-  stimulusDisplayTimestamp?: string; // BigInt as string
-  responseTimestamp?: string;
-  reactionTimeMs?: number;
-  response?: Record<string, unknown>;
-  correct?: boolean;
-  timeout: boolean;
-  excluded: boolean;
-  exclusionReason?: string;
-  createdAt: string;
-}
-
-// =============================================================================
-// Exports
-// =============================================================================
+// Exports ---------------------------------------------------------------------
 
 export interface ExportJob {
   id: string;
-  researcherId: string;
   experimentId: string;
   format: ExportFormat;
   status: ExportStatus;
-  filePath?: string;
-  fileName?: string;
-  errorMessage?: string;
+  fileName: string | null;
+  errorMessage: string | null;
+  filters: { includeExcluded?: boolean; versionId?: string } | null;
   createdAt: string;
-  completedAt?: string;
-  expiresAt?: string;
-  downloadUrl?: string; // Signed URL when status === 'READY'
+  completedAt: string | null;
+  expiresAt: string | null;
+  downloadable: boolean;
 }
 
-export interface CreateExportRequest {
-  experimentId: string;
-  format: ExportFormat;
-  filters?: {
-    includeExcluded?: boolean;
-    versionId?: string;
-  };
-  idempotencyKey?: string;
-}
-
-// =============================================================================
-// Consent
-// =============================================================================
-
-export interface RecordConsentRequest {
-  experimentId: string;
-  versionId: string;
-  consentVersion: string;
-  consentTextHash: string;
-}
+// Consent ---------------------------------------------------------------------
 
 export interface ParticipantConsent {
   id: string;
-  participantId: string;
   experimentId: string;
   versionId: string;
   consentVersion: string;
   agreedAt: string;
-  withdrawnAt?: string;
+  withdrawnAt: string | null;
 }
 
-// =============================================================================
-// Pagination
-// =============================================================================
+// Common ----------------------------------------------------------------------
 
 export interface PaginatedResponse<T> {
   data: T[];
-  pagination: {
-    page: number;
-    limit: number;
-    total: number;
-    totalPages: number;
-    hasNext: boolean;
-    hasPrev: boolean;
-  };
+  pagination: { page: number; limit: number; total: number; totalPages: number; hasNext: boolean; hasPrev: boolean };
 }
-
-// =============================================================================
-// API Errors
-// =============================================================================
-
-export interface ApiError {
-  error: {
-    code: string;
-    message: string;
-    requestId?: string;
-    details?: unknown;
-  };
-}
-
-// Error codes from backend
-export type ApiErrorCode =
-  | 'UNAUTHORIZED'
-  | 'FORBIDDEN'
-  | 'NOT_FOUND'
-  | 'VALIDATION_ERROR'
-  | 'CONFLICT'
-  | 'EXPERIMENT_NOT_ELIGIBLE'
-  | 'EXPERIMENT_CLOSED'
-  | 'EXPERIMENT_PAUSED'
-  | 'ATTEMPT_LIMIT_REACHED'
-  | 'SESSION_EXPIRED'
-  | 'RATE_LIMITED'
-  | 'SERVER_ERROR'
-  | 'DUPLICATE_EVENT';

@@ -1,85 +1,77 @@
 "use client";
-// ==============================================================================
-// CogniScale Frontend — Authentication Context
-// ==============================================================================
-// Provides auth state throughout the app.
-// Access token stays in memory only — never in localStorage.
+// Authentication state. The access token stays in memory; on page load the
+// session is restored from the HTTP-only refresh cookie.
 
-import React, { createContext, useContext, useEffect, useState, useCallback } from 'react';
-import { AuthUser } from '@/lib/types/api';
+import React, { createContext, useCallback, useContext, useEffect, useState } from 'react';
+import { useRouter } from 'next/navigation';
+import type { AuthUser, RegisterRequest, UserRole } from '@/lib/types/api';
 import { authApi } from '@/lib/api/auth';
-import { tokenStore } from '@/lib/api/client';
+import { refreshAccessToken, tokenStore } from '@/lib/api/client';
 
 interface AuthState {
   user: AuthUser | null;
   isLoading: boolean;
-  isAuthenticated: boolean;
 }
 
 interface AuthContextValue extends AuthState {
+  isAuthenticated: boolean;
   login: (email: string, password: string) => Promise<AuthUser>;
+  register: (data: RegisterRequest) => Promise<AuthUser>;
   logout: () => Promise<void>;
+  /** Re-reads the current user (e.g. after rating/reward changes). */
   refreshUser: () => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null);
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
-  const [state, setState] = useState<AuthState>({
-    user: null,
-    isLoading: true,
-    isAuthenticated: false,
-  });
+  const [state, setState] = useState<AuthState>({ user: null, isLoading: true });
 
   const refreshUser = useCallback(async () => {
     try {
-      // Try to restore session via /auth/me (uses existing access token in memory
-      // or triggers token refresh via refresh_token cookie)
       const user = await authApi.me();
-      setState({ user, isLoading: false, isAuthenticated: true });
+      setState({ user, isLoading: false });
     } catch {
       tokenStore.clear();
-      setState({ user: null, isLoading: false, isAuthenticated: false });
+      setState({ user: null, isLoading: false });
     }
   }, []);
 
-  // On mount, attempt to restore session using HTTP-only refresh_token cookie
   useEffect(() => {
-    // First try token refresh silently, then fetch user
-    const restoreSession = async () => {
-      try {
-        const response = await fetch(
-          `${process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:4000/api/v1'}/auth/refresh`,
-          { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' } }
-        );
-        if (response.ok) {
-          const data: { accessToken: string } = await response.json();
-          tokenStore.set(data.accessToken);
-          await refreshUser();
-        } else {
-          setState(prev => ({ ...prev, isLoading: false }));
-        }
-      } catch {
-        setState(prev => ({ ...prev, isLoading: false }));
-      }
+    let cancelled = false;
+    (async () => {
+      const restored = await refreshAccessToken();
+      if (cancelled) return;
+      if (restored) await refreshUser();
+      else setState({ user: null, isLoading: false });
+    })();
+    return () => {
+      cancelled = true;
     };
-
-    restoreSession();
   }, [refreshUser]);
 
-  const login = useCallback(async (email: string, password: string): Promise<AuthUser> => {
-    const result = await authApi.login({ email, password });
-    setState({ user: result.user, isLoading: false, isAuthenticated: true });
+  const login = useCallback(async (email: string, password: string) => {
+    const result = await authApi.login(email, password);
+    setState({ user: result.user, isLoading: false });
+    return result.user;
+  }, []);
+
+  const register = useCallback(async (data: RegisterRequest) => {
+    const result = await authApi.register(data);
+    setState({ user: result.user, isLoading: false });
     return result.user;
   }, []);
 
   const logout = useCallback(async () => {
-    await authApi.logout();
-    setState({ user: null, isLoading: false, isAuthenticated: false });
+    try {
+      await authApi.logout();
+    } finally {
+      setState({ user: null, isLoading: false });
+    }
   }, []);
 
   return (
-    <AuthContext.Provider value={{ ...state, login, logout, refreshUser }}>
+    <AuthContext.Provider value={{ ...state, isAuthenticated: !!state.user, login, register, logout, refreshUser }}>
       {children}
     </AuthContext.Provider>
   );
@@ -89,4 +81,30 @@ export function useAuth(): AuthContextValue {
   const ctx = useContext(AuthContext);
   if (!ctx) throw new Error('useAuth must be used within AuthProvider');
   return ctx;
+}
+
+export function homeForRole(role: UserRole): string {
+  return role === 'PARTICIPANT' ? '/participant' : '/researcher/experiments';
+}
+
+/**
+ * Redirects to /login when signed out and to the user's own area when the role
+ * does not match. Returns true only once the user is allowed to see the page.
+ */
+export function useRequireRole(roles: UserRole[]): { allowed: boolean; user: AuthUser | null } {
+  const { user, isLoading } = useAuth();
+  const router = useRouter();
+  const allowed = !!user && roles.includes(user.role);
+
+  useEffect(() => {
+    if (isLoading) return;
+    if (!user) {
+      const next = typeof window !== 'undefined' ? window.location.pathname + window.location.search : '/';
+      router.replace(`/login?next=${encodeURIComponent(next)}`);
+    } else if (!roles.includes(user.role)) {
+      router.replace(homeForRole(user.role));
+    }
+  }, [isLoading, user, roles, router]);
+
+  return { allowed, user };
 }

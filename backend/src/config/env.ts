@@ -73,13 +73,16 @@ export const env = {
 
   // Rate Limiting
   RATE_LIMIT_WINDOW_MS: optionalIntEnv('RATE_LIMIT_WINDOW_MS', 900000),
-  RATE_LIMIT_MAX_GENERAL: optionalIntEnv('RATE_LIMIT_MAX_GENERAL', 100),
+  RATE_LIMIT_MAX_GENERAL: optionalIntEnv('RATE_LIMIT_MAX_GENERAL', 1000),
   RATE_LIMIT_MAX_AUTH: optionalIntEnv('RATE_LIMIT_MAX_AUTH', 20),
   RATE_LIMIT_MAX_EVENTS: optionalIntEnv('RATE_LIMIT_MAX_EVENTS', 500),
 
   // Export
   EXPORT_DIR: optionalEnv('EXPORT_DIR', './exports'),
   EXPORT_EXPIRY_HOURS: optionalIntEnv('EXPORT_EXPIRY_HOURS', 24),
+
+  // Uploaded experiment assets (local disk storage)
+  UPLOAD_DIR: optionalEnv('UPLOAD_DIR', './uploads'),
 
   // App
   APP_NAME: optionalEnv('APP_NAME', 'SynapseLab'),

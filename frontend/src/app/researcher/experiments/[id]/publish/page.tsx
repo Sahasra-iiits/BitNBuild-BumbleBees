@@ -1,183 +1,146 @@
 "use client";
-import { useState, useEffect } from 'react';
-import { useParams, useRouter } from 'next/navigation';
+import { useState } from 'react';
 import Link from 'next/link';
-import { CheckCircle2, AlertCircle, Copy, Globe, Lock } from 'lucide-react';
-import { useQueryClient } from '@tanstack/react-query';
+import { useParams } from 'next/navigation';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { CheckCircle2, Copy } from 'lucide-react';
+import { experimentsApi } from '@/lib/api/experiments';
+import { ApiRequestError, errorMessage } from '@/lib/api/client';
+import { ExperimentHeader, useExperiment } from '@/components/researcher/ExperimentHeader';
+import { IssueList } from '@/components/experiment/builder/IssueList';
+import { collectAssetIds, getResponseElements, isScoringEnabled, type ValidationIssue } from '@/shared/experiment';
+import type { PublishResponse } from '@/lib/types/api';
 
 export default function PublishPage() {
-  const params = useParams();
-  const router = useRouter();
+  const { id } = useParams<{ id: string }>();
   const queryClient = useQueryClient();
-  const id = params.id as string;
-  const [trialsCount, setTrialsCount] = useState(0);
-  const [published, setPublished] = useState(false);
-  const [visibility, setVisibility] = useState<'public' | 'private'>('public');
+  const { data: experiment } = useExperiment(id);
+  // Always refetch: the draft may have just been edited in the builder.
+  const draft = useQuery({ queryKey: ['draft', id], queryFn: () => experimentsApi.getDraft(id), refetchOnMount: 'always' });
+  const validation = useQuery({ queryKey: ['draft-validation', id], queryFn: () => experimentsApi.validateDraft(id), refetchOnMount: 'always' });
+  const [acknowledged, setAcknowledged] = useState(false);
+  const [serverIssues, setServerIssues] = useState<ValidationIssue[] | null>(null);
+  const [result, setResult] = useState<PublishResponse | null>(null);
 
-  const [isLoading, setIsLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    // Initial fetch to get current status and trial count
-    const fetchExp = async () => {
-      try {
-        const { experimentsApi, versionsApi } = await import('@/lib/api/experiments');
-        const exp = await experimentsApi.get(id);
-        const versions = await versionsApi.list(id);
-        
-        if (exp.status === 'PUBLISHED') {
-          setPublished(true);
-        }
-        setVisibility(exp.visibility.toLowerCase() as 'public' | 'private');
-        
-        // Count trials from the latest version or builder state
-        if (versions.length > 0) {
-          setTrialsCount(versions[0].configSnapshot.trials?.length || 0);
-        } else {
-          // Fallback to local storage if draft has not been versioned yet
-          const saved = localStorage.getItem(`bitnbuild:experiment:${id}`);
-          if (saved) {
-             setTrialsCount(JSON.parse(saved).trials?.length || 0);
-          }
-        }
-      } catch (err) {
-        console.error("Failed to load experiment", err);
+  const publish = useMutation({
+    mutationFn: () => experimentsApi.publish(id),
+    onSuccess: (res) => {
+      setResult(res);
+      setServerIssues(null);
+      void queryClient.invalidateQueries({ queryKey: ['experiment', id] });
+      void queryClient.invalidateQueries({ queryKey: ['versions', id] });
+      void queryClient.invalidateQueries({ queryKey: ['researcher-experiments'] });
+    },
+    onError: (err) => {
+      if (err instanceof ApiRequestError && err.code === 'PUBLISH_VALIDATION_FAILED') {
+        const details = err.details as { issues?: ValidationIssue[] } | undefined;
+        setServerIssues(details?.issues ?? []);
       }
-    };
-    fetchExp();
-  }, [id]);
+    },
+  });
 
-  const handlePublish = async () => {
-    setIsLoading(true);
-    setError(null);
-    try {
-      const { experimentsApi, versionsApi } = await import('@/lib/api/experiments');
-      
-      // Update visibility first
-      await experimentsApi.update(id, { visibility: visibility.toUpperCase() as any });
-      
-      // If there are unsaved trials in localStorage, create a version with them
-      const saved = localStorage.getItem(`bitnbuild:experiment:${id}`);
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        if (parsed.trials && parsed.trials.length > 0) {
-          // Send root-level trials to match backend validation schema
-          await versionsApi.create(id, {
-            trials: parsed.trials,
-            logicRules: [],
-            randomization: []
-          } as any); // Cast as any because the frontend types defined it incorrectly as nested
-        }
-      }
-      
-      // Then publish
-      await experimentsApi.publish(id);
-      
-      setPublished(true);
-      
-      // Clean up local storage draft
-      localStorage.removeItem(`bitnbuild:experiment:${id}`);
+  const participantLink = typeof window !== 'undefined' ? `${window.location.origin}/participant/experiments/${id}/run` : '';
 
-      // Bust caches so dashboard updates
-      router.refresh();
-      queryClient.invalidateQueries({ queryKey: ['researcher-experiments'] });
-      queryClient.invalidateQueries({ queryKey: ['public-experiments'] });
-    } catch (err: any) {
-      console.error(err);
-      setError(err.message || 'Failed to publish experiment');
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  const participantLink = `${typeof window !== 'undefined' ? window.location.origin : ''}/participant/experiments/${id}/run`;
-
-  return (
-    <div className="max-w-3xl mx-auto space-y-8 pb-12">
-      <div className="text-center">
-        <h1 className="text-3xl font-bold tracking-tight">Review & Publish</h1>
-        <p className="text-slate-500 mt-2">Ensure all configurations are correct before going live.</p>
-      </div>
-
-      <div className="bg-white border rounded-xl shadow-sm overflow-hidden">
-        <div className="p-4 border-b bg-slate-50 font-semibold text-lg flex items-center justify-between">
-          Pre-flight Checklist
-          <span className="text-sm font-normal text-slate-500">{trialsCount} Trials Found</span>
-        </div>
-        <div className="p-6 space-y-4">
-          <div className="flex items-center gap-3 text-emerald-600"><CheckCircle2 className="w-5 h-5"/> Basic Information complete</div>
-          <div className="flex items-center gap-3 text-emerald-600"><CheckCircle2 className="w-5 h-5"/> Trials configured ({trialsCount} total)</div>
-          <div className="flex items-center gap-3 text-slate-500"><AlertCircle className="w-5 h-5"/> Logic branching (Not used)</div>
-        </div>
-      </div>
-
-      {!published ? (
-        <div className="space-y-6">
-          <div className="bg-white border rounded-xl p-6 shadow-sm">
-            <h3 className="font-semibold mb-4 text-slate-700">Visibility Settings</h3>
-            <div className="space-y-3">
-              <label className="flex items-start gap-3 p-3 border rounded-lg cursor-pointer hover:bg-slate-50 transition-colors">
-                <input type="radio" name="visibility" checked={visibility === 'public'} onChange={() => setVisibility('public')} className="mt-1" />
-                <div>
-                  <div className="font-medium flex items-center gap-2"><Globe className="w-4 h-4 text-blue-500" /> Public Link</div>
-                  <div className="text-sm text-slate-500">Anyone with the link can participate without an account.</div>
-                </div>
-              </label>
-              <label className="flex items-start gap-3 p-3 border rounded-lg cursor-pointer hover:bg-slate-50 transition-colors">
-                <input type="radio" name="visibility" checked={visibility === 'private'} onChange={() => setVisibility('private')} className="mt-1" />
-                <div>
-                  <div className="font-medium flex items-center gap-2"><Lock className="w-4 h-4 text-slate-500" /> Private (Invite Only)</div>
-                  <div className="text-sm text-slate-500">Only registered users you invite can participate.</div>
-                </div>
-              </label>
-            </div>
-          </div>
-          <div className="flex flex-col items-center gap-4">
-            {error && (
-              <div className="text-red-500 bg-red-50 px-4 py-2 rounded-lg text-sm border border-red-100 flex items-center gap-2">
-                <AlertCircle className="w-4 h-4" /> {error}
-              </div>
-            )}
-            <button 
-              onClick={handlePublish} 
-              disabled={isLoading}
-              className="bg-blue-600 text-white px-8 py-3 rounded-lg font-bold text-lg hover:bg-blue-700 shadow-md transition-transform hover:-translate-y-0.5 disabled:opacity-70 disabled:hover:translate-y-0"
-            >
-              {isLoading ? 'Publishing...' : 'Publish Experiment Now'}
+  if (result) {
+    return (
+      <div className="max-w-3xl mx-auto">
+        <ExperimentHeader id={id} />
+        <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-8 text-center space-y-4">
+          <CheckCircle2 className="w-12 h-12 text-emerald-600 mx-auto" />
+          <h2 className="text-2xl font-bold text-emerald-900">
+            {result.version.created ? `Version ${result.version.versionNumber} is live` : `Live on version ${result.version.versionNumber} (no changes since last publish)`}
+          </h2>
+          <div className="flex flex-wrap gap-2 bg-white border rounded-lg p-3 text-left">
+            <code className="flex-1 min-w-0 truncate text-sm">{participantLink}</code>
+            <button type="button" onClick={() => void navigator.clipboard.writeText(participantLink)} className="inline-flex items-center gap-1 px-3 py-1.5 border rounded text-sm">
+              <Copy className="w-4 h-4" /> Copy link
             </button>
           </div>
+          <Link href={`/researcher/experiments/${id}`} className="inline-block text-blue-700 hover:underline">
+            Go to experiment overview
+          </Link>
         </div>
-      ) : (
-        <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-8 text-center space-y-4">
-          <div className="inline-flex items-center justify-center w-16 h-16 bg-emerald-100 text-emerald-600 rounded-full mb-2">
-            <CheckCircle2 className="w-8 h-8" />
-          </div>
-          <h2 className="text-2xl font-bold text-emerald-800">Experiment is Live!</h2>
-          <p className="text-emerald-700">Your experiment is now published and ready for participants.</p>
-          
-          <div className="mt-6 p-4 bg-white border border-emerald-200 rounded-lg text-left shadow-sm">
-            <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-2">Participant Link ({visibility})</label>
-            <div className="flex items-center gap-2">
-              <code className="flex-1 p-2 bg-slate-50 rounded text-sm text-slate-700 border select-all overflow-x-auto whitespace-nowrap">
-                {participantLink}
-              </code>
-              <button 
-                onClick={() => navigator.clipboard.writeText(participantLink)}
-                className="p-2 bg-slate-100 hover:bg-slate-200 text-slate-600 rounded border transition-colors flex items-center gap-2"
-                title="Copy to clipboard"
-              >
-                <Copy className="w-4 h-4" /> Copy
+      </div>
+    );
+  }
+
+  const def = draft.data?.definition;
+  const issues = serverIssues ?? validation.data?.issues ?? [];
+  const errors = issues.filter((i) => i.severity === 'error').length;
+  const warnings = issues.filter((i) => i.severity === 'warning').length;
+  const responses = def ? def.trials.flatMap((t) => getResponseElements(t)) : [];
+  const status = experiment?.status;
+  const publishable = status === 'DRAFT' || status === 'PAUSED' || status === 'PUBLISHED';
+  const nothingNew = status === 'PUBLISHED' && experiment?.hasUnpublishedChanges === false;
+  const canPublish = !!def && publishable && errors === 0 && (warnings === 0 || acknowledged) && !nothingNew && !publish.isPending;
+
+  return (
+    <div className="max-w-3xl mx-auto pb-12">
+      <ExperimentHeader id={id} />
+      {(draft.isLoading || validation.isLoading) && <p className="text-slate-500">Checking the experiment…</p>}
+      {(draft.error || validation.error) && <p className="text-red-600">{errorMessage(draft.error ?? validation.error)}</p>}
+      {def && validation.data && experiment && (
+        <div className="space-y-6">
+          <section className="bg-white border rounded-xl p-5">
+            <h2 className="font-semibold mb-3">Pre-flight summary</h2>
+            <dl className="grid grid-cols-2 sm:grid-cols-3 gap-4 text-sm">
+              {[
+                ['Trials', def.trials.length],
+                ['Response elements', responses.length],
+                ['Scored responses', responses.filter(isScoringEnabled).length],
+                ['Uploaded files', collectAssetIds(def).length],
+                ['Errors', errors],
+                ['Warnings', warnings],
+              ].map(([label, value]) => (
+                <div key={label}>
+                  <dt className="text-slate-500">{label}</dt>
+                  <dd className={`text-xl font-bold ${label === 'Errors' && Number(value) > 0 ? 'text-red-600' : label === 'Warnings' && Number(value) > 0 ? 'text-amber-700' : ''}`}>{value}</dd>
+                </div>
+              ))}
+            </dl>
+            <p className="text-xs text-slate-500 mt-4">
+              Randomized order: {def.settings.randomizeTrialOrder ? 'yes' : 'no'} · Visibility: {experiment.visibility === 'PUBLIC' ? 'public' : 'private link'} · Reward: {experiment.rewardPoints} pts ·{' '}
+              {experiment.attemptPolicy === 'ALLOW_ONE_ATTEMPT' ? 'one attempt' : `up to ${experiment.maxAttempts} attempts`} · {experiment.eligibilityRules.length} eligibility rule(s).{' '}
+              <Link href={`/researcher/experiments/${id}/participants`} className="text-blue-600 hover:underline">
+                Change settings
+              </Link>
+            </p>
+          </section>
+
+          <section className="bg-white border rounded-xl p-5 space-y-3">
+            <h2 className="font-semibold">Validation</h2>
+            <IssueList issues={issues} empty="No problems found." />
+            {errors > 0 && (
+              <p className="text-sm text-red-700">
+                Publishing is blocked until the errors are fixed in the{' '}
+                <Link href={`/researcher/experiments/${id}/builder`} className="underline">
+                  builder
+                </Link>
+                .
+              </p>
+            )}
+          </section>
+
+          {!publishable && <p className="text-sm text-amber-800">A {status?.toLowerCase()} experiment cannot be published.</p>}
+          {nothingNew && <p className="text-sm text-slate-600">The live version already matches the draft. Edit the experiment in the builder to publish an update.</p>}
+
+          {errors === 0 && publishable && !nothingNew && (
+            <section className="bg-white border rounded-xl p-5 space-y-4">
+              {warnings > 0 && (
+                <label className="flex items-start gap-2 text-sm">
+                  <input type="checkbox" className="mt-1 accent-blue-600" checked={acknowledged} onChange={(e) => setAcknowledged(e.target.checked)} />
+                  I have reviewed the {warnings} warning{warnings === 1 ? '' : 's'} above and want to publish anyway.
+                </label>
+              )}
+              <p className="text-sm text-slate-600">
+                Publishing freezes the current draft as version {experiment.versions.length + 1}. Participants already in progress continue on the version they started.
+              </p>
+              {publish.isError && <p className="text-sm text-red-600">{errorMessage(publish.error)}</p>}
+              <button type="button" disabled={!canPublish} onClick={() => publish.mutate()} className="px-6 py-2.5 rounded-lg bg-blue-600 text-white font-semibold disabled:opacity-40">
+                {publish.isPending ? 'Publishing…' : status === 'PUBLISHED' ? 'Publish update' : 'Publish experiment'}
               </button>
-              <a 
-                href={participantLink}
-                target="_blank"
-                rel="noreferrer"
-                className="p-2 bg-blue-50 text-blue-600 hover:bg-blue-100 rounded border border-blue-200 transition-colors font-medium text-sm"
-              >
-                Open
-              </a>
-            </div>
-          </div>
+            </section>
+          )}
         </div>
       )}
     </div>

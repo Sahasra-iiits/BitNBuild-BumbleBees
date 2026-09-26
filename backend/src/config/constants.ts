@@ -134,15 +134,23 @@ export const PAGINATION = {
   MAX_LIMIT: 100,
 } as const;
 
-// Rating bounds
+// Participant quality rating (Elo-like scale; new participants start at DEFAULT).
 export const RATING = {
   MIN: 0,
-  MAX: 100,
-  DEFAULT: 100,
+  MAX: 3000,
+  DEFAULT: 1200,
+  /** Largest penalty a researcher may apply when confirming a quality flag. */
+  MAX_RESEARCHER_PENALTY: 50,
 } as const;
 
 // Reward bounds
 export const REWARD = {
   MIN: 0,
   MAX: 20,
+} as const;
+
+// Uploaded stimulus files
+export const ASSET_LIMITS = {
+  IMAGE_MAX_BYTES: 10 * 1024 * 1024,
+  AUDIO_MAX_BYTES: 25 * 1024 * 1024,
 } as const;

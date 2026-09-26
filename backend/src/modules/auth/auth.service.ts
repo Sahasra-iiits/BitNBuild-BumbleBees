@@ -2,7 +2,7 @@
 // SynapseLab Authentication Service
 // ==============================================================================
 
-import { AUDIT_ACTIONS, ROLES, UserRole } from '../../config/constants';
+import { AUDIT_ACTIONS, RATING, ROLES, UserRole } from '../../config/constants';
 import { prisma } from '../../config/database';
 import { ConflictError, NotFoundError, UnauthorizedError, ValidationError } from '../../common/errors/app-error';
 import { generatePseudonymousCode, hashPassword, hashString, verifyPassword } from '../../common/utils/crypto';
@@ -50,7 +50,7 @@ export class AuthService {
                   age: input.participantProfile.age,
                   gender: input.participantProfile.gender || null,
                   educationLevel: input.participantProfile.educationLevel || null,
-                  qualityRating: 1200.0,
+                  qualityRating: RATING.DEFAULT,
                   totalRewardPoints: 0,
                 },
               }
@@ -96,25 +96,11 @@ export class AuthService {
       resourceId: user.id,
       ipAddressRedacted: ipAddress,
       userAgent,
-      metadata: { role: user.role, email: user.email },
+      metadata: { role: user.role },
     });
 
     return {
-      user: {
-        id: user.id,
-        email: user.email,
-        role: user.role,
-        isEmailVerified: user.isEmailVerified,
-        researcherProfile: user.researcherProfile,
-        participantProfile: user.participantProfile
-          ? {
-              id: user.participantProfile.id,
-              pseudonymousId: user.participantProfile.pseudonymousId,
-              qualityRating: user.participantProfile.qualityRating,
-              totalRewardPoints: user.participantProfile.totalRewardPoints,
-            }
-          : null,
-      },
+      user: await this.getCurrentUser(user.id),
       accessToken,
       refreshToken,
     };
@@ -174,21 +160,7 @@ export class AuthService {
     });
 
     return {
-      user: {
-        id: user.id,
-        email: user.email,
-        role: user.role,
-        isEmailVerified: user.isEmailVerified,
-        researcherProfile: user.researcherProfile,
-        participantProfile: user.participantProfile
-          ? {
-              id: user.participantProfile.id,
-              pseudonymousId: user.participantProfile.pseudonymousId,
-              qualityRating: user.participantProfile.qualityRating,
-              totalRewardPoints: user.participantProfile.totalRewardPoints,
-            }
-          : null,
-      },
+      user: await this.getCurrentUser(user.id),
       accessToken,
       refreshToken,
     };
@@ -284,6 +256,8 @@ export class AuthService {
             id: true,
             pseudonymousId: true,
             age: true,
+            gender: true,
+            educationLevel: true,
             qualityRating: true,
             totalRewardPoints: true,
             completedSessionsCount: true,

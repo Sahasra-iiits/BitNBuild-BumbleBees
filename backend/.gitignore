@@ -33,5 +33,9 @@ coverage
 .DS_Store
 Thumbs.db
 
-# Exports directory
-exports/
+# Generated export files and uploaded assets (anchored: an unanchored `exports/`
+# also matched src/modules/exports and kept that source out of the repository).
+/exports/
+/uploads/
+/uploads-test/
+/exports-test/

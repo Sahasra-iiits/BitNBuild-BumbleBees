@@ -1,311 +1,361 @@
 "use client";
-import { useEffect, useState, useCallback, useRef } from 'react';
-import { useParams, useRouter } from 'next/navigation';
-import { Trial, ScoringConfig } from '@/lib/experiment/schema';
-import { AssetStore } from '@/lib/experiment/assets';
-import { CheckCircle2 } from 'lucide-react';
-import { v4 as uuidv4 } from 'uuid';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
+import { useParams } from 'next/navigation';
+import { CheckCircle2, Loader2, TrendingDown, TrendingUp } from 'lucide-react';
+import ExperimentRunner, { type TrialRecord } from '@/components/experiment/runtime/ExperimentRunner';
+import { AssetCache } from '@/lib/experiment/asset-cache';
+import { publicExperimentsApi } from '@/lib/api/experiments';
+import { consentApi, CONSENT_TEXT } from '@/lib/api/consent';
+import { EventOutbox, sessionsApi, type OutboxStatus } from '@/lib/api/sessions';
+import { ApiRequestError, errorMessage } from '@/lib/api/client';
+import { useAuth } from '@/lib/context/AuthContext';
+import { isRecord, readJson, removeKey, writeJson } from '@/lib/storage';
+import { computeTrialOrder, createId, type ExperimentDefinition } from '@/shared/experiment';
+import type { BatchEvent, CompletionOutcome, EligibilityResult, PublicExperiment } from '@/lib/types/api';
 
-type RunState = 'LOADING' | 'ERROR' | 'CONSENT' | 'PRELOADING' | 'RUNNING' | 'COMPLETED';
+type Phase =
+  | { kind: 'loading' }
+  | { kind: 'unavailable'; message: string }
+  | { kind: 'intro' }
+  | { kind: 'starting' }
+  | { kind: 'preloading'; done: number; total: number }
+  | { kind: 'asset_error'; failed: number }
+  | { kind: 'running' }
+  | { kind: 'submitting' }
+  | { kind: 'save_error'; message: string; fatal: boolean }
+  | { kind: 'completed'; outcome: CompletionOutcome };
+
+interface RunState {
+  sessionId: string;
+  definition: ExperimentDefinition;
+  order: number[];
+  startPosition: number;
+}
+
+const REASON_LABEL: Record<string, string> = {
+  EXPERIMENT_COMPLETION: 'Completed the study',
+  EXTREMELY_FAST_RESPONSE: 'Many responses were extremely fast',
+  REPEATED_IDENTICAL_RESPONSES: 'Many identical responses in a row',
+  SKIPPED_REQUIRED_QUESTIONS: 'Required questions were left unanswered',
+};
+
+function isRunKey(value: unknown): value is { idempotencyKey: string } {
+  return isRecord(value) && typeof value.idempotencyKey === 'string';
+}
 
 export default function ParticipantRunPage() {
-  const params = useParams();
-  const id = params.id as string;
-  const router = useRouter();
+  const { id: experimentId } = useParams<{ id: string }>();
+  const { user, refreshUser } = useAuth();
+  const [phase, setPhase] = useState<Phase>({ kind: 'loading' });
+  const [experiment, setExperiment] = useState<PublicExperiment | null>(null);
+  const [eligibility, setEligibility] = useState<EligibilityResult | null>(null);
+  const [agreed, setAgreed] = useState(false);
+  const [run, setRun] = useState<RunState | null>(null);
+  const [outboxStatus, setOutboxStatus] = useState<OutboxStatus | null>(null);
+  const outboxRef = useRef<EventOutbox | null>(null);
+  const cache = useMemo(() => new AssetCache(), []);
+  useEffect(() => () => cache.dispose(), [cache]);
+  useEffect(() => () => outboxRef.current?.dispose(), []);
 
-  const [runState, setRunState] = useState<RunState>('LOADING');
-  const [trials, setTrials] = useState<Trial[]>([]);
-  const [currentTrialIndex, setCurrentTrialIndex] = useState(0);
-  const [localResponses, setLocalResponses] = useState<Record<string, any>>({});
-  const [assetUrls, setAssetUrls] = useState<Record<string, string>>({});
-  const [sessionId, setSessionId] = useState<string | null>(null);
-  const [errorMsg, setErrorMsg] = useState<string | null>(null);
-  
-  const timerRef = useRef<NodeJS.Timeout | null>(null);
-  const trialStartTimeRef = useRef<number>(0);
+  const runKeyStorage = user ? `bitnbuild:run:${experimentId}:${user.id}` : null;
 
   useEffect(() => {
-    const loadExperiment = async () => {
+    let cancelled = false;
+    (async () => {
       try {
-        const { publicExperimentsApi } = await import('@/lib/api/experiments');
-        const exp = await publicExperimentsApi.get(id);
-        setRunState('CONSENT');
-      } catch (err: any) {
-        const msg = err.response?.data?.error?.message || err.response?.data?.message || err.message || 'Experiment is unavailable.';
-        setErrorMsg(msg);
-        setRunState('ERROR');
+        const [exp, elig] = await Promise.all([publicExperimentsApi.get(experimentId), publicExperimentsApi.checkEligibility(experimentId)]);
+        if (cancelled) return;
+        setExperiment(exp);
+        setEligibility(elig);
+        setPhase({ kind: 'intro' });
+      } catch (err) {
+        if (!cancelled) setPhase({ kind: 'unavailable', message: errorMessage(err, 'This experiment is not available.') });
       }
+    })();
+    return () => {
+      cancelled = true;
     };
-    loadExperiment();
-  }, [id]);
+  }, [experimentId]);
 
-  const startExperiment = async () => {
-    setRunState('PRELOADING');
-    try {
-      const { sessionsApi } = await import('@/lib/api/sessions');
-      // 1. Start the session to get the version config
-      const sessionData = await sessionsApi.start(id);
-      setSessionId(sessionData.id);
-      
-      const configTrials = sessionData.version.configSnapshot.trials || [];
-      setTrials(configTrials);
-      
-      // 2. Preload assets
-      AssetStore.init();
-      const urls: Record<string, string> = {};
-      for (const t of configTrials) {
-        for (const el of t.elements) {
-          if (el.type === 'IMAGE_VISUAL' && el.config.url?.startsWith('asset://')) {
-            urls[el.config.url] = await AssetStore.getAssetUrl(el.config.url);
-          }
-          if (el.type === 'AUDIO_SOUND' && el.config.url?.startsWith('asset://')) {
-            urls[el.config.url] = await AssetStore.getAssetUrl(el.config.url);
-          }
-        }
+  // Leaving mid-experiment asks for confirmation; recorded trials stay saved.
+  useEffect(() => {
+    if (phase.kind !== 'running' && phase.kind !== 'submitting') return;
+    const handler = (e: BeforeUnloadEvent) => e.preventDefault();
+    window.addEventListener('beforeunload', handler);
+    return () => window.removeEventListener('beforeunload', handler);
+  }, [phase.kind]);
+
+  const finish = useCallback(
+    async (sessionId: string) => {
+      setPhase({ kind: 'submitting' });
+      try {
+        await outboxRef.current?.flushAll();
+        const outcome = await sessionsApi.complete(sessionId);
+        if (runKeyStorage) removeKey(runKeyStorage);
+        setPhase({ kind: 'completed', outcome });
+        void refreshUser();
+      } catch (err) {
+        const fatal = err instanceof ApiRequestError && err.statusCode >= 400 && err.statusCode < 500 && err.code !== 'SESSION_INCOMPLETE' && err.statusCode !== 429;
+        setPhase({ kind: 'save_error', message: errorMessage(err, 'Your responses could not be saved.'), fatal });
       }
-      setAssetUrls(urls);
-      
-      // 3. Start running
-      setRunState('RUNNING');
-      setCurrentTrialIndex(0);
-      setLocalResponses({});
-    } catch (err: any) {
-      console.error('Failed to start session', err);
-      const msg = err.response?.data?.error?.message || err.response?.data?.message || err.message || 'Experiment is unavailable.';
-      setErrorMsg(msg);
-      setRunState('ERROR');
+    },
+    [refreshUser, runKeyStorage]
+  );
+
+  const begin = async () => {
+    if (!experiment || !runKeyStorage) return;
+    setPhase({ kind: 'starting' });
+    try {
+      const stored = readJson(runKeyStorage, isRunKey);
+      const idempotencyKey = stored?.idempotencyKey ?? createId();
+      writeJson(runKeyStorage, { idempotencyKey });
+
+      let consentId: string | undefined;
+      if (experiment.currentVersion) {
+        consentId = (await consentApi.record({ experimentId, versionId: experiment.currentVersion.id })).id;
+      }
+      const started = await sessionsApi.start(experimentId, {
+        idempotencyKey,
+        consentId,
+        clientMetadata: {
+          userAgent: navigator.userAgent,
+          screen: `${window.screen.width}x${window.screen.height}`,
+          devicePixelRatio: window.devicePixelRatio,
+        },
+      });
+
+      const { session, version, progress } = started;
+      if (session.status === 'COMPLETED') {
+        const outcome = await sessionsApi.complete(session.id);
+        removeKey(runKeyStorage);
+        setPhase({ kind: 'completed', outcome });
+        return;
+      }
+      if (session.status !== 'STARTED' && session.status !== 'IN_PROGRESS') {
+        removeKey(runKeyStorage);
+        setPhase({ kind: 'unavailable', message: 'This session can no longer be continued.' });
+        return;
+      }
+
+      outboxRef.current?.dispose();
+      const outbox = new EventOutbox(session.id);
+      outbox.onStatus(setOutboxStatus);
+      outboxRef.current = outbox;
+
+      const definition = version.definition;
+      const order = computeTrialOrder(definition, session.id);
+      const recorded = new Set(progress.recordedTrialIds);
+      // Trials finished before a reload whose events are still queued locally count too.
+      const pendingKey = `bitnbuild:outbox:${session.id}`;
+      const queued = readJson(pendingKey, (v): v is Array<{ trialId: string }> => Array.isArray(v));
+      for (const e of queued ?? []) recorded.add(e.trialId);
+      const startPosition = order.findIndex((idx) => !recorded.has(definition.trials[idx].id));
+
+      if (startPosition === -1) {
+        await finish(session.id);
+        return;
+      }
+
+      setPhase({ kind: 'preloading', done: 0, total: 0 });
+      const { failed } = await cache.preload(definition, (done, total) => setPhase({ kind: 'preloading', done, total }));
+      setRun({ sessionId: session.id, definition, order, startPosition });
+      if (failed.length > 0) {
+        setPhase({ kind: 'asset_error', failed: failed.length });
+        return;
+      }
+      setPhase({ kind: 'running' });
+    } catch (err) {
+      setPhase({ kind: 'unavailable', message: errorMessage(err, 'The experiment could not be started.') });
     }
   };
 
-  const advanceTrial = useCallback(async (reason: string, responseData?: any) => {
-    if (timerRef.current) clearTimeout(timerRef.current);
-    
-    let trialResults: any[] = [];
-    if (responseData) {
-      trialResults.push({
-        elementId: responseData.elementId,
-        response: responseData.response,
-        isCorrect: responseData.isCorrect
-      });
-    } else {
-      Object.entries(localResponses).forEach(([elId, val]) => {
-        trialResults.push({ elementId: elId, response: val });
-      });
-    }
+  const retryAssets = async () => {
+    if (!run) return;
+    setPhase({ kind: 'preloading', done: 0, total: 0 });
+    const { failed } = await cache.preload(run.definition, (done, total) => setPhase({ kind: 'preloading', done, total }));
+    setPhase(failed.length > 0 ? { kind: 'asset_error', failed: failed.length } : { kind: 'running' });
+  };
 
-    // Build the batch event for this trial
-    const event = {
-      eventId: uuidv4(),
-      trialId: trials[currentTrialIndex].id || `trial-${currentTrialIndex}`,
-      trialSequence: currentTrialIndex,
-      reactionTimeMs: performance.now() - trialStartTimeRef.current,
-      response: { results: trialResults, reason },
-      timeout: reason === 'timeout',
+  const onTrialComplete = useCallback((record: TrialRecord) => {
+    const event: BatchEvent = {
+      eventId: createId(),
+      trialId: record.trial.id,
+      trialSequence: record.position,
+      stimulusDisplayTimestamp: record.onsetEpochMs,
+      responseTimestamp: record.endEpochMs,
+      reactionTimeMs: record.reactionTimeMs,
+      response: {
+        advanceReason: record.payload.advanceReason,
+        elements: record.payload.elements.map((e) => ({ elementId: e.elementId, value: e.value, rtMs: e.rtMs })),
+      },
+      clientEventSequence: record.position,
     };
+    outboxRef.current?.enqueue(event);
+  }, []);
 
-    setLocalResponses({});
-    
-    // Ingest the event to backend in the background
-    if (sessionId) {
-      import('@/lib/api/sessions').then(({ sessionsApi }) => {
-        sessionsApi.ingestBatch(sessionId, [event]).catch(console.error);
-      });
-    }
+  const onFinished = useCallback(() => {
+    if (run) void finish(run.sessionId);
+  }, [run, finish]);
 
-    if (currentTrialIndex < trials.length - 1) {
-      setCurrentTrialIndex(prev => prev + 1);
-    } else {
-      setRunState('COMPLETED');
-      if (sessionId) {
-        import('@/lib/api/sessions').then(({ sessionsApi }) => {
-          sessionsApi.complete(sessionId).catch(console.error);
-        });
-      }
-    }
-  }, [currentTrialIndex, trials, localResponses, sessionId]);
+  // ---------------------------------------------------------------------------
 
-  useEffect(() => {
-    if (runState !== 'RUNNING') return;
-
-    const trial = trials[currentTrialIndex];
-    if (!trial) return;
-
-    trialStartTimeRef.current = performance.now();
-
-    if (trial.advanceMode === 'timed' || trial.advanceMode === 'response_or_timeout') {
-      if (trial.durationMs && trial.durationMs > 0) {
-        timerRef.current = setTimeout(() => advanceTrial('timeout'), trial.durationMs);
-      }
-    }
-
-    const keyboardElements = trial.elements.filter(e => e.type === 'KEYBOARD_PRESS');
-    const handleKeyDown = (e: KeyboardEvent) => {
-      const key = e.key.toUpperCase();
-      for (const el of keyboardElements) {
-        const allowed = (el.config as any).allowedKeys || [];
-        if (allowed.length === 0 || allowed.includes(key)) {
-          setLocalResponses(prev => ({ ...prev, [el.id]: key }));
-          if (trial.advanceMode !== 'timed') {
-            advanceTrial('participant_response', { elementId: el.id, response: key });
-          }
-          break;
-        }
-      }
-    };
-
-    if (keyboardElements.length > 0) {
-      window.addEventListener('keydown', handleKeyDown);
-    }
-
-    return () => {
-      if (timerRef.current) clearTimeout(timerRef.current);
-      window.removeEventListener('keydown', handleKeyDown);
-    };
-  }, [currentTrialIndex, runState, trials, advanceTrial]);
-
-  const handleElementResponse = useCallback((elementId: string, value: any, scoring?: ScoringConfig) => {
-    const trial = trials[currentTrialIndex];
-    let isCorrect: boolean | undefined = undefined;
-    if (scoring && scoring.enabled) {
-      isCorrect = (scoring.correctAnswer === value);
-    }
-    setLocalResponses(prev => ({ ...prev, [elementId]: value }));
-
-    if (trial.advanceMode !== 'timed') {
-      advanceTrial('participant_response', { elementId, response: value, isCorrect });
-    }
-  }, [currentTrialIndex, trials, advanceTrial]);
-
-  if (runState === 'LOADING') return <div className="fixed inset-0 bg-white flex items-center justify-center">Loading...</div>;
-  if (runState === 'ERROR') return <div className="fixed inset-0 bg-white flex items-center justify-center flex-col gap-4 text-slate-800"><h1 className="text-2xl font-bold">Experiment Error</h1><p className="text-red-600 font-medium">{errorMsg}</p><Link href="/" className="text-blue-600 underline">Return Home</Link></div>;
-
-  if (runState === 'CONSENT') {
+  if (phase.kind === 'running' && run) {
     return (
-      <div className="min-h-screen bg-slate-50 py-12 px-4">
-        <div className="max-w-2xl mx-auto bg-white rounded-2xl shadow-sm border p-8 space-y-6">
-          <h1 className="text-2xl font-bold">Participant Consent</h1>
-          <div className="prose prose-slate">
-            <p>You are invited to participate in a research study.</p>
-            <p>Your participation is completely voluntary. You may withdraw at any time without penalty. All data collected will be anonymous.</p>
-            <p>The study involves responding to stimuli displayed on your screen.</p>
-            <p>By clicking "I Consent", you confirm that you understand and agree to participate.</p>
+      <>
+        <ExperimentRunner definition={run.definition} order={run.order} startPosition={run.startPosition} assets={cache} onTrialComplete={onTrialComplete} onFinished={onFinished} />
+        {outboxStatus?.fatal && (
+          <div role="alert" className="fixed bottom-3 left-1/2 -translate-x-1/2 z-[60] bg-red-600 text-white text-sm px-4 py-2 rounded-lg shadow">
+            Your responses could not be saved: {outboxStatus.lastError}
           </div>
-          <div className="pt-6 border-t flex justify-end gap-4">
-            <button onClick={() => router.push('/')} className="px-6 py-2 text-slate-600 hover:bg-slate-100 rounded-lg font-medium">Decline</button>
-            <button onClick={startExperiment} className="px-6 py-2 bg-blue-600 text-white rounded-lg font-medium hover:bg-blue-700">I Consent, Start</button>
-          </div>
-        </div>
-      </div>
+        )}
+      </>
     );
   }
 
-  if (runState === 'COMPLETED') {
-    return (
-      <div className="fixed inset-0 bg-slate-50 flex flex-col items-center justify-center p-4 text-center space-y-6">
-        <div className="w-20 h-20 bg-emerald-100 text-emerald-600 rounded-full flex items-center justify-center mx-auto mb-4">
-          <CheckCircle2 className="w-10 h-10" />
-        </div>
-        <h1 className="text-4xl font-bold text-slate-900">Thank You!</h1>
-        <p className="text-xl text-slate-600 max-w-md">Your responses have been recorded successfully. You may now close this tab.</p>
-      </div>
-    );
-  }
-
-  const trial = trials[currentTrialIndex];
-  if (!trial) return null;
-
-  return (
-    <div className="fixed inset-0 z-50 bg-white flex flex-col items-center justify-center overflow-hidden touch-none select-none">
-      <div className="absolute inset-0 flex flex-col items-center justify-center p-8 w-full max-w-4xl mx-auto">
-        {trial.elements.map(el => {
-          switch (el.type) {
-            case 'TEXT_INSTRUCTION':
-              return <div key={el.id} className="text-3xl font-medium text-slate-900 text-center mb-8 whitespace-pre-wrap">{el.config.text}</div>;
-            case 'IMAGE_VISUAL':
-              return <img key={el.id} src={assetUrls[el.config.url] || el.config.url} alt={el.config.altText} className="max-w-full max-h-[60vh] object-contain mb-8 rounded shadow-sm" />;
-            case 'AUDIO_SOUND':
-              return <audio key={el.id} src={assetUrls[el.config.url] || el.config.url} autoPlay={el.config.autoplay} controls className="mb-8" />;
-            case 'FIXATION_CROSS':
-              return <div key={el.id} className="text-8xl font-light text-slate-400 mb-8">{el.config.style || '+'}</div>;
-            case 'KEYBOARD_PRESS':
-              return null; // Keyboard relies on event listener
-            case 'MULTIPLE_CHOICE':
-              return (
-                <div key={el.id} className="w-full max-w-md space-y-3 mb-8 relative z-10">
-                   {el.config.options.map((opt: any) => {
-                     const isSelected = localResponses[el.id] === opt.id;
-                     return (
-                       <button 
-                         key={opt.id} 
-                         onClick={() => handleElementResponse(el.id, opt.id, el.scoring)} 
-                         className={`block w-full p-4 border-2 rounded-xl text-lg transition-all font-medium shadow-sm ${isSelected ? 'border-blue-500 bg-blue-50 text-blue-700 ring-2 ring-blue-500 ring-offset-2' : 'border-slate-200 text-slate-700 hover:border-blue-300 hover:bg-slate-50'}`}
-                       >
-                         {opt.label}
-                       </button>
-                     );
-                   })}
-                </div>
-              );
-            case 'SLIDER_RATING':
-              return (
-                <div key={el.id} className="w-full max-w-lg space-y-6 mb-8 relative z-10">
-                  <div className="flex justify-between text-sm font-medium text-slate-500 px-2">
-                    <span>{el.config.leftLabel || el.config.min}</span>
-                    <span>{el.config.rightLabel || el.config.max}</span>
-                  </div>
-                  <input 
-                    type="range" 
-                    min={el.config.min} max={el.config.max} step={el.config.step} defaultValue={el.config.defaultValue}
-                    onMouseUp={(e) => handleElementResponse(el.id, (e.target as HTMLInputElement).value, el.scoring)}
-                    className="w-full h-3 bg-slate-200 rounded-lg appearance-none cursor-pointer accent-blue-600" 
-                  />
-                </div>
-              );
-            case 'TEXT_INPUT':
-              return (
-                <div key={el.id} className="w-full max-w-md mb-8 relative z-10">
-                  {el.config.multiline ? (
-                    <textarea 
-                      placeholder={el.config.placeholder || ''} value={localResponses[el.id] || ''}
-                      onChange={(e) => setLocalResponses(prev => ({ ...prev, [el.id]: e.target.value }))}
-                      onBlur={(e) => handleElementResponse(el.id, e.target.value, el.scoring)}
-                      className="w-full p-4 border-2 border-slate-300 rounded-xl text-lg focus:border-blue-500 focus:ring-4 focus:ring-blue-500/20 outline-none transition-all min-h-[120px] resize-y shadow-sm bg-white"
-                    />
-                  ) : (
-                    <input 
-                      type="text" placeholder={el.config.placeholder || ''} value={localResponses[el.id] || ''}
-                      onChange={(e) => setLocalResponses(prev => ({ ...prev, [el.id]: e.target.value }))}
-                      onBlur={(e) => handleElementResponse(el.id, e.target.value, el.scoring)}
-                      onKeyDown={(e) => e.key === 'Enter' && handleElementResponse(el.id, e.currentTarget.value, el.scoring)}
-                      className="w-full p-4 border-2 border-slate-300 rounded-xl text-lg focus:border-blue-500 focus:ring-4 focus:ring-blue-500/20 outline-none transition-all shadow-sm bg-white"
-                    />
-                  )}
-                </div>
-              );
-            case 'MOUSE_CLICK':
-              return (
-                <div 
-                  key={el.id}
-                  className="absolute inset-0 cursor-crosshair z-0"
-                  onClick={(e) => handleElementResponse(el.id, { x: e.clientX, y: e.clientY }, el.scoring)}
-                />
-              );
-            default: return null;
-          }
-        })}
-      </div>
-      
-      {trial.advanceMode === 'manual' && trial.elements.filter(e => e.role === 'RESPONSE').length === 0 && (
-        <div className="absolute bottom-8 left-0 right-0 flex justify-center z-10 animate-fade-in">
-          <button 
-            onClick={() => advanceTrial('manual_continue')}
-            className="px-8 py-3 bg-slate-900 text-white rounded-full font-medium hover:bg-slate-800 shadow-lg hover:shadow-xl transition-all flex items-center gap-2"
-          >
-            Continue 
-          </button>
-        </div>
-      )}
+  const card = (children: React.ReactNode) => (
+    <div className="min-h-screen bg-slate-50 py-10 px-4 flex items-start sm:items-center justify-center">
+      <div className="w-full max-w-2xl bg-white rounded-2xl shadow-sm border p-6 sm:p-8 space-y-6">{children}</div>
     </div>
   );
+
+  switch (phase.kind) {
+    case 'loading':
+    case 'starting':
+      return card(
+        <div className="flex items-center gap-2 text-slate-500">
+          <Loader2 className="w-5 h-5 animate-spin" /> {phase.kind === 'loading' ? 'Loading…' : 'Starting your session…'}
+        </div>
+      );
+    case 'unavailable':
+      return card(
+        <>
+          <h1 className="text-xl font-bold">Experiment unavailable</h1>
+          <p className="text-red-700">{phase.message}</p>
+          <Link href="/participant/experiments" className="text-blue-600 hover:underline">
+            Back to experiments
+          </Link>
+        </>
+      );
+    case 'preloading':
+      return card(
+        <div className="flex items-center gap-2 text-slate-600" aria-live="polite">
+          <Loader2 className="w-5 h-5 animate-spin" /> Preparing the experiment{phase.total > 0 ? ` (loading files ${phase.done}/${phase.total})` : ''}…
+        </div>
+      );
+    case 'asset_error':
+      return card(
+        <>
+          <h1 className="text-xl font-bold">Some files could not be loaded</h1>
+          <p className="text-slate-600">{phase.failed} image or sound file(s) failed to download. Check your connection and try again.</p>
+          <button type="button" onClick={() => void retryAssets()} className="px-5 py-2 rounded-lg bg-blue-600 text-white font-medium">
+            Try again
+          </button>
+        </>
+      );
+    case 'submitting':
+      return card(
+        <div className="flex items-center gap-2 text-slate-600" aria-live="polite">
+          <Loader2 className="w-5 h-5 animate-spin" /> Saving your responses…
+        </div>
+      );
+    case 'save_error':
+      return card(
+        <>
+          <h1 className="text-xl font-bold">Your responses are not saved yet</h1>
+          <p className="text-red-700">{phase.message}</p>
+          {!phase.fatal && <p className="text-sm text-slate-600">They are kept in this browser. Keep this page open and retry, or come back later on this device.</p>}
+          {run && (
+            <button type="button" onClick={() => void finish(run.sessionId)} className="px-5 py-2 rounded-lg bg-blue-600 text-white font-medium">
+              Retry saving
+            </button>
+          )}
+        </>
+      );
+    case 'completed': {
+      const { outcome } = phase;
+      return card(
+        <div className="text-center space-y-5">
+          <div className="w-16 h-16 bg-emerald-100 text-emerald-600 rounded-full flex items-center justify-center mx-auto">
+            <CheckCircle2 className="w-9 h-9" />
+          </div>
+          <h1 className="text-3xl font-bold">Thank you!</h1>
+          <p className="text-slate-600">Your responses were saved.</p>
+          <div className="grid grid-cols-2 gap-3 text-left">
+            <div className="rounded-xl border p-4">
+              <div className="text-xs font-semibold text-slate-500 uppercase">Reward</div>
+              <div className="text-2xl font-bold text-emerald-600">+{outcome.rewardPoints} pts</div>
+              <div className="text-xs text-slate-500">Total {outcome.totalRewardPoints} pts</div>
+            </div>
+            <div className="rounded-xl border p-4">
+              <div className="text-xs font-semibold text-slate-500 uppercase">Participant rating</div>
+              <div className="text-2xl font-bold text-slate-900">{Math.round(outcome.currentRating)}</div>
+              {outcome.ratingChanges.map((c, i) => (
+                <div key={i} className={`text-xs flex items-center gap-1 ${c.delta >= 0 ? 'text-emerald-700' : 'text-red-700'}`}>
+                  {c.delta >= 0 ? <TrendingUp className="w-3 h-3" /> : <TrendingDown className="w-3 h-3" />}
+                  {c.delta > 0 ? '+' : ''}
+                  {Math.round(c.delta)} · {REASON_LABEL[c.reason] ?? c.reason}
+                </div>
+              ))}
+              {outcome.ratingChanges.length === 0 && <div className="text-xs text-slate-500">No change</div>}
+            </div>
+          </div>
+          <div className="flex flex-col sm:flex-row gap-3 justify-center">
+            <Link href="/participant/experiments" className="px-5 py-2.5 rounded-lg bg-slate-900 text-white font-medium">
+              Find more experiments
+            </Link>
+            <Link href="/participant/rating" className="px-5 py-2.5 rounded-lg border font-medium">
+              Rating history
+            </Link>
+          </div>
+        </div>
+      );
+    }
+    case 'intro':
+    default: {
+      if (!experiment) return null;
+      const blocked = eligibility && !eligibility.eligible;
+      const resuming = !!eligibility?.attempts?.activeSessionId;
+      return card(
+        <>
+          <div>
+            <h1 className="text-2xl font-bold">{experiment.title}</h1>
+            {experiment.researcher?.institution && <p className="text-sm text-slate-500">{experiment.researcher.institution}</p>}
+          </div>
+          {experiment.description && <p className="text-slate-700">{experiment.description}</p>}
+          {experiment.instructions && (
+            <div className="p-4 bg-blue-50 text-blue-900 rounded-lg whitespace-pre-wrap">
+              <div className="text-xs font-semibold uppercase mb-1">Instructions</div>
+              {experiment.instructions}
+            </div>
+          )}
+          <div className="text-sm text-slate-600">
+            Reward: <strong>{experiment.rewardPoints} points</strong> on completion ·{' '}
+            {experiment.attemptPolicy === 'ALLOW_ONE_ATTEMPT' ? 'one attempt' : `up to ${experiment.maxAttempts} attempts`}
+          </div>
+          {blocked ? (
+            <div className="p-4 rounded-lg bg-amber-50 border border-amber-200 text-amber-900">
+              <div className="font-semibold">You cannot take part in this experiment</div>
+              <div className="text-sm">{eligibility?.reason}</div>
+            </div>
+          ) : (
+            <>
+              <div className="border rounded-lg p-4 bg-slate-50 text-sm text-slate-700 whitespace-pre-wrap max-h-60 overflow-y-auto">{CONSENT_TEXT}</div>
+              <label className="flex items-start gap-2 text-sm">
+                <input type="checkbox" className="mt-1 accent-blue-600" checked={agreed} onChange={(e) => setAgreed(e.target.checked)} />I have read the information above and agree to take part.
+              </label>
+              <div className="flex justify-end gap-3 pt-2 border-t">
+                <Link href="/participant/experiments" className="px-5 py-2 rounded-lg text-slate-600 hover:bg-slate-100 font-medium">
+                  Decline
+                </Link>
+                <button type="button" disabled={!agreed} onClick={() => void begin()} className="px-5 py-2 rounded-lg bg-blue-600 text-white font-medium hover:bg-blue-700 disabled:opacity-40">
+                  {resuming ? 'Continue where I left off' : 'Start experiment'}
+                </button>
+              </div>
+            </>
+          )}
+        </>
+      );
+    }
+  }
 }

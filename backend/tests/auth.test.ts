@@ -51,7 +51,8 @@ describe('Authentication API', () => {
       expect(res.status).toBe(201);
       expect(res.body.user.role).toBe('PARTICIPANT');
       expect(res.body.user.participantProfile).toHaveProperty('pseudonymousId');
-      expect(res.body.user.participantProfile.qualityRating).toBe(100);
+      expect(res.body.user.participantProfile.qualityRating).toBe(1200);
+      expect(res.body.user.participantProfile.completedSessionsCount).toBe(0);
     });
 
     it('should reject registration with weak password', async () => {

@@ -1,187 +1,128 @@
 // ==============================================================================
 // SynapseLab — Results Service
 // ==============================================================================
-// Computes aggregate results from raw trial response data.
+// All statistics are computed from recorded, non-excluded trial responses of
+// completed, non-excluded sessions. Nothing is estimated or synthesized.
 
+import type { Prisma } from '@prisma/client';
 import { prisma } from '../../config/database';
-import { NotFoundError, ForbiddenError } from '../../common/errors/app-error';
+import { ForbiddenError, NotFoundError } from '../../common/errors/app-error';
 import { parsePagination, paginatedResult } from '../../common/utils/pagination';
+import type { TrialResponsePayload } from '../../shared/experiment';
+
+async function assertOwner(experimentId: string, researcherProfileId: string) {
+  const experiment = await prisma.experiment.findUnique({ where: { id: experimentId }, select: { researcherId: true } });
+  if (!experiment) throw new NotFoundError('Experiment not found');
+  if (experiment.researcherId !== researcherProfileId) throw new ForbiddenError('You do not own this experiment');
+}
+
+interface Sample {
+  rt: number | null;
+  correct: boolean | null;
+  timeout: boolean;
+  sessionId: string;
+}
+
+function round2(n: number | null): number | null {
+  return n === null ? null : Math.round(n * 100) / 100;
+}
+
+export function summarize(samples: Sample[]) {
+  const rts = samples.filter((s) => !s.timeout && s.rt !== null).map((s) => s.rt as number).sort((a, b) => a - b);
+  const scored = samples.filter((s) => s.correct !== null);
+  const correct = scored.filter((s) => s.correct).length;
+  const mean = rts.length > 0 ? rts.reduce((a, b) => a + b, 0) / rts.length : null;
+  const median =
+    rts.length === 0 ? null : rts.length % 2 === 0 ? (rts[rts.length / 2 - 1] + rts[rts.length / 2]) / 2 : rts[Math.floor(rts.length / 2)];
+  const sd = rts.length > 1 && mean !== null ? Math.sqrt(rts.reduce((s, rt) => s + (rt - mean) ** 2, 0) / (rts.length - 1)) : null;
+  return {
+    n: samples.length,
+    participants: new Set(samples.map((s) => s.sessionId)).size,
+    rtCount: rts.length,
+    meanRt: round2(mean),
+    medianRt: round2(median),
+    sdRt: round2(sd),
+    scoredCount: scored.length,
+    /** Percentage 0-100 of scored responses that were correct. */
+    accuracy: scored.length > 0 ? round2((correct / scored.length) * 100) : null,
+    timeouts: samples.filter((s) => s.timeout).length,
+  };
+}
 
 export class ResultsService {
-  /**
-   * Compute aggregate results for an experiment, grouped by condition.
-   */
   static async getAggregateResults(experimentId: string, researcherProfileId: string, versionId?: string) {
-    // Verify ownership
-    const experiment = await prisma.experiment.findUnique({ where: { id: experimentId } });
-    if (!experiment) throw new NotFoundError('Experiment not found');
-    if (experiment.researcherId !== researcherProfileId) {
-      throw new ForbiddenError('You do not own this experiment');
-    }
+    await assertOwner(experimentId, researcherProfileId);
 
-    // Get all non-excluded sessions
-    const sessionFilter: any = {
-      experimentId,
-      status: { in: ['COMPLETED', 'IN_PROGRESS'] },
-    };
-    if (versionId) sessionFilter.versionId = versionId;
-
-    const sessions = await prisma.experimentSession.findMany({
-      where: sessionFilter,
-      select: { id: true, status: true, participantId: true },
+    const versionFilter = versionId ? { versionId } : {};
+    const statusCounts = await prisma.experimentSession.groupBy({
+      by: ['status'],
+      where: { experimentId, ...versionFilter },
+      _count: { _all: true },
+    });
+    const count = (status: string) => statusCounts.find((s) => s.status === status)?._count._all ?? 0;
+    const participants = await prisma.experimentSession.findMany({
+      where: { experimentId, ...versionFilter },
+      distinct: ['participantId'],
+      select: { participantId: true },
     });
 
-    const sessionIds = sessions.map((s) => s.id);
-
-    // Get all non-excluded responses
     const responses = await prisma.trialResponse.findMany({
-      where: {
-        sessionId: { in: sessionIds },
-        excluded: false,
-      },
+      where: { excluded: false, session: { experimentId, status: 'COMPLETED', ...versionFilter } },
       select: {
+        sessionId: true,
         condition: true,
         reactionTimeMs: true,
         correct: true,
         timeout: true,
-        excluded: true,
+        response: true,
+        trial: { select: { id: true, trialKey: true, name: true } },
       },
     });
 
-    // Group by condition
-    const conditionMap = new Map<string, Array<{
-      reactionTimeMs: number | null;
-      correct: boolean | null;
-      timeout: boolean;
-    }>>();
-
-    for (const r of responses) {
-      const condition = r.condition || 'DEFAULT';
-      if (!conditionMap.has(condition)) {
-        conditionMap.set(condition, []);
-      }
-      conditionMap.get(condition)!.push({
-        reactionTimeMs: r.reactionTimeMs,
-        correct: r.correct,
-        timeout: r.timeout,
-      });
-    }
-
-    // Compute aggregates per condition
-    const results = Array.from(conditionMap.entries()).map(([condition, data]) => {
-      const rts = data
-        .filter((d) => d.reactionTimeMs != null && !d.timeout)
-        .map((d) => d.reactionTimeMs!);
-
-      const correctCount = data.filter((d) => d.correct === true).length;
-      const incorrectCount = data.filter((d) => d.correct === false).length;
-      const scoredCount = correctCount + incorrectCount;
-
-      const meanRt = rts.length > 0 ? rts.reduce((a, b) => a + b, 0) / rts.length : null;
-      const sortedRts = [...rts].sort((a, b) => a - b);
-      const medianRt = sortedRts.length > 0
-        ? sortedRts.length % 2 === 0
-          ? (sortedRts[sortedRts.length / 2 - 1] + sortedRts[sortedRts.length / 2]) / 2
-          : sortedRts[Math.floor(sortedRts.length / 2)]
-        : null;
-
-      const stdRt = rts.length > 1 && meanRt !== null
-        ? Math.sqrt(rts.reduce((sum, rt) => sum + Math.pow(rt - meanRt, 2), 0) / (rts.length - 1))
-        : null;
-
-      return {
-        condition,
-        n: data.length,
-        meanRt: meanRt !== null ? Math.round(meanRt * 100) / 100 : null,
-        medianRt: medianRt !== null ? Math.round(medianRt * 100) / 100 : null,
-        stdRt: stdRt !== null ? Math.round(stdRt * 100) / 100 : null,
-        accuracy: scoredCount > 0 ? Math.round((correctCount / scoredCount) * 10000) / 100 : null,
-        errorRate: scoredCount > 0 ? Math.round((incorrectCount / scoredCount) * 10000) / 100 : null,
-      };
+    // Only trials that asked for a response contribute to RT/accuracy statistics.
+    const responseTrials = responses.filter((r) => {
+      const payload = r.response as unknown as TrialResponsePayload | null;
+      return r.reactionTimeMs !== null || r.correct !== null || (payload?.elements?.length ?? 0) > 0 || r.timeout;
     });
 
-    // Summary stats
-    const totalParticipants = new Set(sessions.map((s) => s.participantId)).size;
-    const completedSessions = sessions.filter((s) => s.status === 'COMPLETED').length;
-    const excludedSessions = await prisma.experimentSession.count({
-      where: { experimentId, status: 'EXCLUDED' },
-    });
+    const byCondition = new Map<string, Sample[]>();
+    const byTrial = new Map<string, { name: string; condition: string; samples: Sample[] }>();
+    for (const r of responseTrials) {
+      const sample: Sample = { rt: r.reactionTimeMs, correct: r.correct, timeout: r.timeout, sessionId: r.sessionId };
+      const condition = r.condition || 'Unlabeled';
+      if (!byCondition.has(condition)) byCondition.set(condition, []);
+      byCondition.get(condition)!.push(sample);
 
-    // Save computed results
-    for (const r of results) {
-      await prisma.experimentResult.upsert({
-        where: {
-          id: `${experimentId}:${versionId || 'all'}:${r.condition}`,
-        },
-        create: {
-          experimentId,
-          versionId,
-          condition: r.condition,
-          n: r.n,
-          meanRt: r.meanRt,
-          medianRt: r.medianRt,
-          stdRt: r.stdRt,
-          accuracy: r.accuracy,
-          errorRate: r.errorRate,
-        },
-        update: {
-          n: r.n,
-          meanRt: r.meanRt,
-          medianRt: r.medianRt,
-          stdRt: r.stdRt,
-          accuracy: r.accuracy,
-          errorRate: r.errorRate,
-          computedAt: new Date(),
-        },
-      }).catch(() => {
-        // Upsert may fail on id format, just create
-        return prisma.experimentResult.create({
-          data: {
-            experimentId,
-            versionId,
-            condition: r.condition,
-            n: r.n,
-            meanRt: r.meanRt,
-            medianRt: r.medianRt,
-            stdRt: r.stdRt,
-            accuracy: r.accuracy,
-            errorRate: r.errorRate,
-          },
-        });
-      });
+      const key = r.trial.trialKey ?? r.trial.id;
+      if (!byTrial.has(key)) byTrial.set(key, { name: r.trial.name ?? key, condition, samples: [] });
+      byTrial.get(key)!.samples.push(sample);
     }
 
     return {
       experimentId,
-      versionId,
+      versionId: versionId ?? null,
       summary: {
-        totalParticipants,
-        completedSessions,
-        excludedSessions,
-        totalResponses: responses.length,
+        participants: participants.length,
+        totalSessions: statusCounts.reduce((s, c) => s + c._count._all, 0),
+        completedSessions: count('COMPLETED'),
+        inProgressSessions: count('STARTED') + count('IN_PROGRESS'),
+        excludedSessions: count('EXCLUDED'),
+        abandonedSessions: count('ABANDONED'),
+        analyzedResponses: responseTrials.length,
       },
-      conditions: results,
+      conditions: Array.from(byCondition.entries())
+        .map(([condition, samples]) => ({ condition, ...summarize(samples) }))
+        .sort((a, b) => a.condition.localeCompare(b.condition)),
+      trials: Array.from(byTrial.entries()).map(([trialKey, t]) => ({ trialKey, name: t.name, condition: t.condition, ...summarize(t.samples) })),
       computedAt: new Date().toISOString(),
     };
   }
 
-  /**
-   * List participants for an experiment.
-   */
-  static async listParticipants(
-    experimentId: string,
-    researcherProfileId: string,
-    query: { page?: number; limit?: number; status?: string }
-  ) {
-    const experiment = await prisma.experiment.findUnique({ where: { id: experimentId } });
-    if (!experiment) throw new NotFoundError('Experiment not found');
-    if (experiment.researcherId !== researcherProfileId) {
-      throw new ForbiddenError('You do not own this experiment');
-    }
-
+  static async listParticipants(experimentId: string, researcherProfileId: string, query: { page?: number; limit?: number; status?: string }) {
+    await assertOwner(experimentId, researcherProfileId);
     const pagination = parsePagination(query);
-    const where: any = { experimentId };
-    if (query.status) where.status = query.status;
+    const where: Prisma.ExperimentSessionWhereInput = { experimentId };
+    if (query.status) where.status = query.status as Prisma.ExperimentSessionWhereInput['status'];
 
     const [sessions, total] = await Promise.all([
       prisma.experimentSession.findMany({
@@ -196,77 +137,72 @@ export class ResultsService {
           startedAt: true,
           completedAt: true,
           qualityStatus: true,
-          _count: { select: { responses: true, qualitySignals: true } },
+          version: { select: { versionNumber: true } },
+          qualitySignals: { select: { signalType: true, severity: true, metadata: true } },
+          qualityFlags: { select: { id: true, status: true, reason: true } },
+          _count: { select: { responses: true } },
         },
       }),
       prisma.experimentSession.count({ where }),
     ]);
-
     return paginatedResult(sessions, total, pagination);
   }
 
-  /**
-   * Get raw data for an experiment (for analysis/export).
-   */
+  /** Trial-level rows for the raw data table. */
   static async getRawData(
     experimentId: string,
     researcherProfileId: string,
-    options: { includeExcluded?: boolean; versionId?: string; limit?: number; offset?: number }
+    options: { includeExcluded: boolean; versionId?: string; limit: number; offset: number }
   ) {
-    const experiment = await prisma.experiment.findUnique({ where: { id: experimentId } });
-    if (!experiment) throw new NotFoundError('Experiment not found');
-    if (experiment.researcherId !== researcherProfileId) {
-      throw new ForbiddenError('You do not own this experiment');
-    }
-
-    const sessionFilter: any = { experimentId };
-    if (options.versionId) sessionFilter.versionId = options.versionId;
-    if (!options.includeExcluded) sessionFilter.status = { not: 'EXCLUDED' };
-
-    const responses = await prisma.trialResponse.findMany({
-      where: {
-        session: sessionFilter,
-        ...(options.includeExcluded ? {} : { excluded: false }),
+    await assertOwner(experimentId, researcherProfileId);
+    const where: Prisma.TrialResponseWhereInput = {
+      session: {
+        experimentId,
+        ...(options.versionId ? { versionId: options.versionId } : {}),
+        ...(options.includeExcluded ? {} : { status: { not: 'EXCLUDED' } }),
       },
-      include: {
-        session: {
-          select: {
-            pseudonymousRef: true,
-            versionId: true,
-            status: true,
-          },
-        },
-        trial: {
-          select: {
-            name: true,
-            trialType: true,
-            sequenceOrder: true,
-          },
-        },
-      },
-      orderBy: [{ sessionId: 'asc' }, { trialSequence: 'asc' }],
-      take: options.limit || 10000,
-      skip: options.offset || 0,
-    });
+      ...(options.includeExcluded ? {} : { excluded: false }),
+    };
 
-    return responses.map((r) => ({
-      participantId: r.session.pseudonymousRef,
-      experimentId,
-      version: r.session.versionId,
-      sessionId: r.sessionId,
-      sessionStatus: r.session.status,
-      trialId: r.trialId,
-      trialName: r.trial.name,
-      trialType: r.trial.trialType,
-      trialSequence: r.trialSequence,
-      condition: r.condition,
-      stimulus: r.stimulusId,
-      response: r.response,
-      correct: r.correct,
-      reactionTimeMs: r.reactionTimeMs,
-      timeout: r.timeout,
-      excluded: r.excluded,
-      exclusionReason: r.exclusionReason,
-    }));
+    const [rows, total] = await Promise.all([
+      prisma.trialResponse.findMany({
+        where,
+        include: {
+          session: { select: { pseudonymousRef: true, status: true, version: { select: { versionNumber: true } } } },
+          trial: { select: { id: true, trialKey: true, name: true } },
+        },
+        orderBy: [{ session: { startedAt: 'asc' } }, { sessionId: 'asc' }, { trialSequence: 'asc' }],
+        take: options.limit,
+        skip: options.offset,
+      }),
+      prisma.trialResponse.count({ where }),
+    ]);
+
+    return {
+      total,
+      limit: options.limit,
+      offset: options.offset,
+      data: rows.map((r) => {
+        const payload = r.response as unknown as TrialResponsePayload | null;
+        return {
+          id: r.id,
+          participant: r.session.pseudonymousRef,
+          sessionId: r.sessionId,
+          sessionStatus: r.session.status,
+          versionNumber: r.session.version.versionNumber,
+          trialKey: r.trial.trialKey ?? r.trial.id,
+          trialName: r.trial.name,
+          trialSequence: r.trialSequence,
+          condition: r.condition,
+          advanceReason: payload?.advanceReason ?? null,
+          responses: (payload?.elements ?? []).map((e) => ({ elementId: e.elementId, type: e.type, display: e.display, rtMs: e.rtMs, correct: e.correct ?? null })),
+          reactionTimeMs: r.reactionTimeMs,
+          correct: r.correct,
+          timeout: r.timeout,
+          excluded: r.excluded,
+          exclusionReason: r.exclusionReason,
+        };
+      }),
+    };
   }
 }

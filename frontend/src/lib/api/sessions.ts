@@ -1,200 +1,146 @@
-// ==============================================================================
-// CogniScale Frontend — Sessions API (Experiment Runner)
-// ==============================================================================
-// CRITICAL: This module powers the high-precision experiment runner.
-// Event batching, idempotency, and retry logic live here.
-// NEVER make per-trial network requests — batch everything.
-
-import { api } from './client';
-import {
-  StartSessionRequest,
-  StartSessionResponse,
-  BatchEvent,
-  BatchEventRequest,
-  ExperimentSession,
-} from '../types/api';
-import { v4 as uuidv4 } from 'uuid';
-
-// =============================================================================
-// Sessions API
-// =============================================================================
+import { api, ApiRequestError } from './client';
+import { isRecord, readJson, removeKey, writeJson } from '../storage';
+import type { BatchEvent, CompletionOutcome, IngestResult, MySession, StartSessionResponse } from '../types/api';
 
 export const sessionsApi = {
-  // Start a new session — returns full version config for local execution
-  start: async (experimentId: string, data: StartSessionRequest = {}): Promise<StartSessionResponse> => {
-    if (api.useMock) {
-      await new Promise(r => setTimeout(r, 500));
-      // Import mock version for local runner
-      const { versionsApi } = await import('./experiments');
-      const version = await versionsApi.get(experimentId, 'mock');
-      return {
-        id: `session-mock-${Date.now()}`,
-        experimentId,
-        versionId: version.id,
-        participantId: 'part-mock-1',
-        pseudonymousRef: `pseudo-${uuidv4().slice(0, 8)}`,
-        status: 'STARTED',
-        startedAt: new Date().toISOString(),
-        version,
-      };
-    }
-    return api.post<StartSessionResponse>(
-      `/experiments/${experimentId}/sessions`,
-      {
-        ...data,
-        // Generate idempotency key if not provided to prevent double-session
-        idempotencyKey: data.idempotencyKey || `${experimentId}-${Date.now()}`,
-      }
-    );
-  },
-
-  // Ingest a batch of trial response events (idempotent via eventId)
-  ingestBatch: async (sessionId: string, events: BatchEvent[]): Promise<{ accepted: number; duplicates: number }> => {
-    if (api.useMock) {
-      console.log(`[Mock API] Ingesting ${events.length} events for session ${sessionId}`);
-      await new Promise(r => setTimeout(r, 200));
-      return { accepted: events.length, duplicates: 0 };
-    }
-    return api.post<{ accepted: number; duplicates: number }>(
-      `/sessions/${sessionId}/events/batch`,
-      { events } satisfies BatchEventRequest
-    );
-  },
-
-  // Complete a session
-  complete: async (sessionId: string): Promise<ExperimentSession> => {
-    if (api.useMock) {
-      await new Promise(r => setTimeout(r, 300));
-      return {
-        id: sessionId,
-        experimentId: 'exp-mock-1',
-        versionId: 'ver-mock-1',
-        participantId: 'part-mock-1',
-        pseudonymousRef: 'pseudo-abc',
-        status: 'COMPLETED',
-        startedAt: new Date().toISOString(),
-        completedAt: new Date().toISOString(),
-      };
-    }
-    return api.post<ExperimentSession>(`/sessions/${sessionId}/complete`);
-  },
-
-  // Get session details
-  get: async (sessionId: string): Promise<ExperimentSession> => {
-    if (api.useMock) {
-      return {
-        id: sessionId,
-        experimentId: 'exp-mock-1',
-        versionId: 'ver-mock-1',
-        participantId: 'part-mock-1',
-        pseudonymousRef: 'pseudo-abc',
-        status: 'IN_PROGRESS',
-        startedAt: new Date().toISOString(),
-      };
-    }
-    return api.get<ExperimentSession>(`/sessions/${sessionId}`);
-  },
+  start: (experimentId: string, body: { idempotencyKey: string; consentId?: string; clientMetadata?: Record<string, unknown> }) =>
+    api.post<StartSessionResponse>(`/experiments/${experimentId}/sessions`, body),
+  ingestBatch: (sessionId: string, events: BatchEvent[]) => api.post<IngestResult>(`/sessions/${sessionId}/events/batch`, { events }),
+  complete: (sessionId: string) => api.post<CompletionOutcome>(`/sessions/${sessionId}/complete`),
+  listMine: () => api.get<MySession[]>('/sessions/me'),
 };
 
 // =============================================================================
-// Event Buffer — for high-precision runner
+// Event outbox
 // =============================================================================
-// Collects events locally and flushes to backend in configurable batches.
-// Survives short network interruptions by retrying with exponential backoff.
+// Trial events are persisted locally the moment a trial ends and sent in the
+// background in batches, so the running experiment never waits on the network
+// and a reload or brief outage does not lose responses. Event ids make resending
+// safe: the server ignores duplicates.
 
-const FLUSH_INTERVAL_MS = 5000;    // Flush every 5 seconds
-const MAX_BATCH_SIZE = 50;          // Max events per batch
-const MAX_RETRY_ATTEMPTS = 3;
+const FLUSH_DELAY_MS = 3000;
+const FLUSH_BATCH_THRESHOLD = 10;
+const MAX_BATCH = 100;
 
-export class EventBuffer {
-  private buffer: BatchEvent[] = [];
-  private sessionId: string;
-  private flushTimer?: ReturnType<typeof setTimeout>;
-  private isFlushing = false;
-  private retryQueue: BatchEvent[] = [];
+export interface OutboxStatus {
+  pending: number;
+  sending: boolean;
+  lastError: string | null;
+  /** Set when the server rejected the data itself (not a network problem). */
+  fatal: boolean;
+}
 
-  constructor(sessionId: string) {
-    this.sessionId = sessionId;
-    this.scheduleFlush();
+function isEventArray(value: unknown): value is BatchEvent[] {
+  return Array.isArray(value) && value.every((e) => isRecord(e) && typeof e.eventId === 'string' && typeof e.trialId === 'string');
+}
+
+export class EventOutbox {
+  private readonly key: string;
+  private pending: BatchEvent[];
+  private timer: ReturnType<typeof setTimeout> | null = null;
+  private inflight: Promise<void> | null = null;
+  private status: OutboxStatus;
+  private listener: ((s: OutboxStatus) => void) | null = null;
+  private persisted = true;
+
+  constructor(private readonly sessionId: string) {
+    this.key = `bitnbuild:outbox:${sessionId}`;
+    this.pending = readJson(this.key, isEventArray) ?? [];
+    this.status = { pending: this.pending.length, sending: false, lastError: null, fatal: false };
   }
 
-  // Add a new event to the buffer
-  push(event: Omit<BatchEvent, 'eventId'>): void {
-    const fullEvent: BatchEvent = {
-      ...event,
-      eventId: uuidv4(), // Unique idempotency key
-    };
-    this.buffer.push(fullEvent);
+  onStatus(listener: ((s: OutboxStatus) => void) | null) {
+    this.listener = listener;
+    listener?.(this.status);
+  }
 
-    // Flush immediately if buffer is getting large
-    if (this.buffer.length >= MAX_BATCH_SIZE) {
-      this.flush();
+  /** False when events could not be written to local storage (they are still kept in memory). */
+  get isPersisted() {
+    return this.persisted;
+  }
+
+  private update(patch: Partial<OutboxStatus>) {
+    this.status = { ...this.status, ...patch, pending: this.pending.length };
+    this.listener?.(this.status);
+  }
+
+  private persist() {
+    if (this.pending.length === 0) {
+      removeKey(this.key);
+      this.persisted = true;
+    } else {
+      this.persisted = writeJson(this.key, this.pending);
     }
   }
 
-  // Flush current buffer to backend
-  async flush(): Promise<void> {
-    if (this.isFlushing) return;
-    
-    const toSend = [...this.retryQueue, ...this.buffer.splice(0, MAX_BATCH_SIZE)];
-    if (toSend.length === 0) return;
+  enqueue(event: BatchEvent) {
+    this.pending.push(event);
+    this.persist();
+    this.update({});
+    if (this.pending.length >= FLUSH_BATCH_THRESHOLD) void this.flush().catch(() => undefined);
+    else this.schedule();
+  }
 
-    this.isFlushing = true;
-    this.retryQueue = [];
+  private schedule() {
+    if (this.timer) clearTimeout(this.timer);
+    this.timer = setTimeout(() => {
+      this.timer = null;
+      void this.flush().catch(() => undefined);
+    }, FLUSH_DELAY_MS);
+  }
 
+  /** Sends pending events once. Rejects on failure (events stay queued unless fatal). */
+  flush(): Promise<void> {
+    if (this.inflight) return this.inflight;
+    if (this.pending.length === 0) return Promise.resolve();
+    const batch = this.pending.slice(0, MAX_BATCH);
+    this.update({ sending: true });
+    this.inflight = sessionsApi
+      .ingestBatch(this.sessionId, batch)
+      .then(() => {
+        const sent = new Set(batch.map((e) => e.eventId));
+        this.pending = this.pending.filter((e) => !sent.has(e.eventId));
+        this.persist();
+        this.update({ sending: false, lastError: null });
+      })
+      .catch((error: unknown) => {
+        const fatal = error instanceof ApiRequestError && error.statusCode >= 400 && error.statusCode < 500 && error.statusCode !== 401 && error.statusCode !== 429;
+        this.update({ sending: false, lastError: error instanceof Error ? error.message : 'Upload failed', fatal });
+        if (!fatal) this.schedule();
+        throw error;
+      })
+      .finally(() => {
+        this.inflight = null;
+      });
+    return this.inflight;
+  }
+
+  /** Sends everything, retrying transient failures with backoff. */
+  async flushAll(maxAttempts = 5): Promise<void> {
+    if (this.timer) {
+      clearTimeout(this.timer);
+      this.timer = null;
+    }
     let attempt = 0;
-    while (attempt < MAX_RETRY_ATTEMPTS) {
+    while (this.pending.length > 0 || this.inflight) {
       try {
-        await sessionsApi.ingestBatch(this.sessionId, toSend);
-        this.isFlushing = false;
-        this.scheduleFlush();
-        return;
+        await this.flush();
+        attempt = 0;
       } catch (error) {
-        attempt++;
-        if (attempt < MAX_RETRY_ATTEMPTS) {
-          // Exponential backoff
-          await new Promise(r => setTimeout(r, Math.pow(2, attempt) * 500));
-        } else {
-          // Max retries exceeded — put events back in retry queue
-          console.error('[EventBuffer] Failed to flush after max retries. Events queued for retry.');
-          this.retryQueue = toSend;
-        }
+        attempt += 1;
+        if (this.status.fatal || attempt >= maxAttempts) throw error;
+        await new Promise((r) => setTimeout(r, 500 * 2 ** attempt));
       }
     }
-    
-    this.isFlushing = false;
-    this.scheduleFlush();
   }
 
-  // Final flush before session completion
-  async flushAll(): Promise<void> {
-    if (this.flushTimer) clearTimeout(this.flushTimer);
-    
-    const toSend = [...this.retryQueue, ...this.buffer.splice(0)];
-    if (toSend.length === 0) return;
-
-    let attempt = 0;
-    while (attempt < MAX_RETRY_ATTEMPTS) {
-      try {
-        await sessionsApi.ingestBatch(this.sessionId, toSend);
-        this.retryQueue = [];
-        return;
-      } catch (error) {
-        attempt++;
-        if (attempt < MAX_RETRY_ATTEMPTS) {
-          await new Promise(r => setTimeout(r, Math.pow(2, attempt) * 500));
-        }
-      }
-    }
-    console.error('[EventBuffer] Final flush failed. Some events may be lost.');
+  get size() {
+    return this.pending.length;
   }
 
-  private scheduleFlush(): void {
-    if (this.flushTimer) clearTimeout(this.flushTimer);
-    this.flushTimer = setTimeout(() => this.flush(), FLUSH_INTERVAL_MS);
-  }
-
-  destroy(): void {
-    if (this.flushTimer) clearTimeout(this.flushTimer);
+  dispose() {
+    if (this.timer) clearTimeout(this.timer);
+    this.timer = null;
+    this.listener = null;
   }
 }

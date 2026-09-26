@@ -1,724 +1,511 @@
 "use client";
-import { useState, useEffect, useCallback } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useParams, useRouter } from 'next/navigation';
-import { Play, Copy, Trash2, Settings, Plus, GripVertical, Image as ImageIcon, Volume2, Type, MousePointer2, Keyboard, List, SlidersHorizontal, Crosshair, ArrowUp, ArrowDown } from 'lucide-react';
-import { 
-  Trial, 
-  ExperimentElement, 
-  generateId, 
-  getDefaultScoring, 
-  ScoringConfig,
-  AdvanceMode
-} from '@/lib/experiment/schema';
+import { AlertTriangle, ArrowDown, ArrowLeft, ArrowUp, Check, Copy, Loader2, Play, Plus, Rocket, Trash2 } from 'lucide-react';
+import {
+  addElement,
+  addTrial,
+  deleteElement,
+  deleteTrial,
+  duplicateElementIn,
+  duplicateTrialIn,
+  moveElement,
+  moveTrial,
+  updateElement,
+  updateTrial,
+  validateDefinition,
+  countBySeverity,
+  ADVANCE_MODES,
+  type AdvanceMode,
+  type ElementType,
+  type ExperimentElement,
+  type Trial,
+  type ValidationIssue,
+} from '@/shared/experiment';
+import { useDraftEditor, type SaveState } from '@/lib/experiment/use-draft-editor';
+import { AssetCache } from '@/lib/experiment/asset-cache';
+import { readLegacyAsset } from '@/lib/experiment/legacy-local-assets';
+import { assetsApi } from '@/lib/api/assets';
+import { errorMessage } from '@/lib/api/client';
+import { MediaEditor } from '@/components/experiment/builder/MediaEditor';
+import {
+  ChoiceEditor,
+  FixationEditor,
+  KeyboardEditor,
+  MouseClickEditor,
+  SliderEditor,
+  TextInputEditor,
+  TextInstructionEditor,
+  YesNoEditor,
+} from '@/components/experiment/builder/ElementEditors';
+import { IssueList } from '@/components/experiment/builder/IssueList';
+import { NumberField, TextField, Toggle, Field, inputClass } from '@/components/experiment/builder/fields';
+import { ADVANCE_MODE_HELP, ADVANCE_MODE_LABEL, ELEMENT_META, RESPONSE_TYPES, STIMULUS_TYPES } from '@/components/experiment/builder/element-meta';
 
-// --- CONFIG COMPONENTS ---
-
-function ScoringConfigPanel({ scoring, updateScoring, possibleAnswers, answerLabels }: { scoring: ScoringConfig, updateScoring: (s: ScoringConfig) => void, possibleAnswers: any[], answerLabels?: string[] }) {
-  if (!scoring) return null;
-  
+function SaveIndicator({ state, error, lastSavedAt, onRetry }: { state: SaveState; error: string | null; lastSavedAt: Date | null; onRetry: () => void }) {
+  if (state === 'saving' || state === 'pending') {
+    return (
+      <span className="inline-flex items-center gap-1.5 text-xs text-amber-600" aria-live="polite">
+        <Loader2 className="w-3.5 h-3.5 animate-spin" /> Saving…
+      </span>
+    );
+  }
+  if (state === 'error') {
+    return (
+      <span className="inline-flex items-center gap-2 text-xs text-red-600" aria-live="assertive">
+        Save failed{error ? `: ${error}` : ''} — retrying.
+        <button type="button" onClick={onRetry} className="underline">
+          Retry now
+        </button>
+      </span>
+    );
+  }
+  if (state === 'conflict') return <span className="text-xs text-red-600">Not saved — changed elsewhere</span>;
   return (
-    <div className="mt-4 pt-4 border-t border-slate-100">
-      <div className="flex items-center justify-between mb-3">
-        <label className="text-[11px] font-bold text-slate-400 uppercase tracking-wider flex items-center gap-2">
-          <input type="checkbox" checked={scoring.enabled} onChange={(e) => updateScoring({ ...scoring, enabled: e.target.checked })} className="w-3.5 h-3.5" />
-          Track Correctness (Scoring)
-        </label>
-      </div>
-      
-      {scoring.enabled && (
-        <div className="pl-5 space-y-3">
-          <div>
-            <label className="block text-xs text-slate-500 mb-1">Correct Answer</label>
-            <div className="flex flex-wrap gap-2">
-              {possibleAnswers.length === 0 ? (
-                <span className="text-xs text-red-500 italic">Please configure the element options first.</span>
-              ) : (
-                possibleAnswers.map((ans, i) => (
-                  <label key={ans} className={`cursor-pointer px-3 py-1.5 rounded-md border text-sm font-medium transition-all ${scoring.correctAnswer === ans ? 'bg-emerald-500 border-emerald-600 text-white shadow-sm' : 'bg-white border-slate-200 text-slate-500 hover:border-emerald-300 hover:text-emerald-600'}`}>
-                    <input type="radio" className="hidden" checked={scoring.correctAnswer === ans} onChange={() => updateScoring({ ...scoring, correctAnswer: ans })} />
-                    <span>{answerLabels ? answerLabels[i] : ans}</span>
-                  </label>
-                ))
-              )}
-            </div>
-          </div>
-        </div>
-      )}
-    </div>
+    <span className="inline-flex items-center gap-1 text-xs text-slate-500" aria-live="polite">
+      <Check className="w-3.5 h-3.5 text-emerald-600" /> Saved{lastSavedAt ? ` ${lastSavedAt.toLocaleTimeString()}` : ''}
+    </span>
   );
 }
-
-function TextInstructionConfig({ element, update }: { element: any, update: (e: any) => void }) {
-  return (
-    <textarea 
-      className="w-full text-sm border border-slate-200 rounded-md p-2 mt-2 outline-none focus:border-blue-500" 
-      rows={3} 
-      placeholder="Enter instructions..."
-      value={element.config.text}
-      onChange={(e) => update({ ...element, config: { ...element.config, text: e.target.value } })}
-    />
-  );
-}
-
-function ImageVisualConfig({ element, update }: { element: any, update: (e: any) => void }) {
-  const [uploading, setUploading] = useState(false);
-
-  const handleFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (file) {
-      setUploading(true);
-      try {
-        const { AssetStore } = await import('@/lib/experiment/assets');
-        const assetUri = await AssetStore.saveAsset(file);
-        update({ ...element, config: { ...element.config, url: assetUri } });
-      } catch (err) {
-        console.error(err);
-      } finally {
-        setUploading(false);
-      }
-    }
-  };
-
-  return (
-    <div className="mt-2 space-y-3">
-      <div className="flex items-center gap-3">
-        <input 
-          type="text" 
-          className="flex-1 text-sm border border-slate-200 rounded-md p-2 outline-none focus:border-blue-500 bg-slate-50" 
-          placeholder="Image URL or Browse..." 
-          value={element.config.url.startsWith('asset://') ? '[Local Uploaded File]' : element.config.url}
-          onChange={(e) => update({ ...element, config: { ...element.config, url: e.target.value } })}
-        />
-        <label className={`px-3 py-2 bg-slate-100 border border-slate-200 rounded-md text-sm font-medium ${uploading ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer hover:bg-slate-200'}`}>
-          {uploading ? 'Uploading...' : 'Browse'}
-          <input type="file" accept="image/*" className="hidden" onChange={handleFile} disabled={uploading} />
-        </label>
-      </div>
-      <input 
-        type="text" 
-        className="w-full text-sm border border-slate-200 rounded-md p-2 outline-none focus:border-blue-500" 
-        placeholder="Alt text (accessibility)" 
-        value={element.config.altText || ''}
-        onChange={(e) => update({ ...element, config: { ...element.config, altText: e.target.value } })}
-      />
-    </div>
-  );
-}
-
-function AudioSoundConfig({ element, update }: { element: any, update: (e: any) => void }) {
-  const [uploading, setUploading] = useState(false);
-
-  const handleFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (file) {
-      setUploading(true);
-      try {
-        const { AssetStore } = await import('@/lib/experiment/assets');
-        const assetUri = await AssetStore.saveAsset(file);
-        update({ ...element, config: { ...element.config, url: assetUri } });
-      } catch (err) {
-        console.error(err);
-      } finally {
-        setUploading(false);
-      }
-    }
-  };
-
-  return (
-    <div className="mt-2 space-y-3">
-      <div className="flex items-center gap-3">
-        <input 
-          type="text" 
-          className="flex-1 text-sm border border-slate-200 rounded-md p-2 outline-none focus:border-blue-500 bg-slate-50" 
-          placeholder="Audio URL or Browse..." 
-          value={element.config.url.startsWith('asset://') ? '[Local Uploaded File]' : element.config.url}
-          onChange={(e) => update({ ...element, config: { ...element.config, url: e.target.value } })}
-        />
-        <label className={`px-3 py-2 bg-slate-100 border border-slate-200 rounded-md text-sm font-medium ${uploading ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer hover:bg-slate-200'}`}>
-          {uploading ? 'Uploading...' : 'Browse'}
-          <input type="file" accept="audio/*" className="hidden" onChange={handleFile} disabled={uploading} />
-        </label>
-      </div>
-      <label className="flex items-center gap-2 text-sm text-slate-600">
-        <input 
-          type="checkbox" 
-          checked={element.config.autoplay}
-          onChange={(e) => update({ ...element, config: { ...element.config, autoplay: e.target.checked } })}
-        />
-        Autoplay on trial start (May require prior interaction due to browser policies)
-      </label>
-    </div>
-  );
-}
-
-function FixationCrossConfig({ element, update }: { element: any, update: (e: any) => void }) {
-  return (
-    <div className="mt-2 flex items-center gap-2">
-      <span className="text-sm text-slate-600">Style:</span>
-      <select 
-        className="text-sm border border-slate-200 rounded-md p-1.5 outline-none focus:border-blue-500"
-        value={element.config.style}
-        onChange={(e) => update({ ...element, config: { ...element.config, style: e.target.value } })}
-      >
-        <option value="+">Plus (+)</option>
-        <option value="dot">Dot (•)</option>
-        <option value="circle">Circle (○)</option>
-      </select>
-    </div>
-  );
-}
-
-function KeyboardConfig({ element, update }: { element: any, update: (e: any) => void }) {
-  const [isRecording, setIsRecording] = useState(false);
-
-  const handleKeyDown = (e: React.KeyboardEvent) => {
-    e.preventDefault();
-    const key = e.key.toLowerCase();
-    if (key !== 'escape' && key !== 'tab' && !element.config.allowedKeys.includes(key)) {
-      update({
-        ...element,
-        config: { ...element.config, allowedKeys: [...element.config.allowedKeys, key === ' ' ? 'space' : key] }
-      });
-    }
-    setIsRecording(false);
-  };
-
-  const removeKey = (k: string) => {
-    update({
-      ...element,
-      config: { ...element.config, allowedKeys: element.config.allowedKeys.filter((x: string) => x !== k) }
-    });
-  };
-
-  return (
-    <div className="mt-4 space-y-3">
-      <div>
-        <label className="block text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-2">Allowed Keys</label>
-        <div className="flex flex-wrap gap-2 items-center">
-          {element.config.allowedKeys.map((k: string) => (
-            <span key={k} className="px-2.5 py-1 bg-slate-100 border border-slate-200 rounded-md text-sm font-medium flex items-center gap-1 uppercase shadow-sm">
-              {k}
-              <button onClick={() => removeKey(k)} className="text-slate-400 hover:text-red-500 ml-1 transition-colors">&times;</button>
-            </span>
-          ))}
-          <button 
-            onClick={() => setIsRecording(true)}
-            onKeyDown={isRecording ? handleKeyDown : undefined}
-            onBlur={() => setIsRecording(false)}
-            autoFocus={isRecording}
-            className={`px-3 py-1 border border-dashed rounded-md text-sm font-medium transition-all ${isRecording ? 'border-blue-500 bg-blue-50 text-blue-700 outline-none ring-2 ring-blue-500/20' : 'border-slate-300 text-slate-500 hover:bg-slate-50'}`}
-          >
-            {isRecording ? 'Listening... (Press a key)' : '+ Add Key'}
-          </button>
-        </div>
-      </div>
-      
-      <ScoringConfigPanel 
-        scoring={element.scoring} 
-        updateScoring={(scoring) => update({ ...element, scoring })}
-        possibleAnswers={element.config.allowedKeys}
-      />
-    </div>
-  );
-}
-
-function MultipleChoiceConfig({ element, update }: { element: any, update: (e: any) => void }) {
-  const updateOption = (id: string, val: string) => {
-    const opts = element.config.options.map((o: any) => o.id === id ? { ...o, label: val } : o);
-    update({ ...element, config: { ...element.config, options: opts } });
-  };
-
-  const removeOption = (id: string) => {
-    const opts = element.config.options.filter((o: any) => o.id !== id);
-    let newScoring = { ...element.scoring };
-    if (newScoring.correctAnswer === id) newScoring.correctAnswer = undefined;
-    update({ ...element, config: { ...element.config, options: opts }, scoring: newScoring });
-  };
-
-  const addOption = () => {
-    update({
-      ...element,
-      config: { ...element.config, options: [...element.config.options, { id: generateId(), label: `Option ${element.config.options.length + 1}` }] }
-    });
-  };
-
-  return (
-    <div className="mt-3 space-y-2">
-      {element.config.options.map((opt: any, i: number) => (
-        <div key={opt.id} className="flex items-center gap-2 group">
-          <input type="radio" disabled className="w-4 h-4 text-blue-600 border-slate-300" />
-          <input 
-            type="text" 
-            value={opt.label}
-            onChange={(e) => updateOption(opt.id, e.target.value)}
-            className="flex-1 text-sm border-b border-transparent hover:border-slate-200 focus:border-blue-500 p-1 outline-none bg-transparent" 
-            placeholder={`Option ${i + 1}`} 
-          />
-          {element.config.options.length > 2 && (
-            <button onClick={() => removeOption(opt.id)} className="opacity-0 group-hover:opacity-100 text-slate-400 hover:text-red-500 px-2">&times;</button>
-          )}
-        </div>
-      ))}
-      <button onClick={addOption} className="text-xs text-blue-600 font-medium mt-1 flex items-center gap-1 hover:underline ml-6">
-        <Plus className="w-3 h-3" /> Add Option
-      </button>
-      
-      <ScoringConfigPanel 
-        scoring={element.scoring} 
-        updateScoring={(scoring) => update({ ...element, scoring })}
-        possibleAnswers={element.config.options.map((o: any) => o.id)}
-        answerLabels={element.config.options.map((o: any) => o.label)}
-      />
-    </div>
-  );
-}
-
-function SliderRatingConfig({ element, update }: { element: any, update: (e: any) => void }) {
-  return (
-    <div className="mt-3 space-y-4">
-      <div className="grid grid-cols-2 gap-4">
-        <div>
-          <label className="block text-xs text-slate-500 mb-1">Minimum Value</label>
-          <input type="number" value={element.config.min} onChange={(e) => update({ ...element, config: { ...element.config, min: Number(e.target.value) } })} className="w-full text-sm border rounded p-1.5 outline-none focus:border-blue-500" />
-        </div>
-        <div>
-          <label className="block text-xs text-slate-500 mb-1">Maximum Value</label>
-          <input type="number" value={element.config.max} onChange={(e) => update({ ...element, config: { ...element.config, max: Number(e.target.value) } })} className="w-full text-sm border rounded p-1.5 outline-none focus:border-blue-500" />
-        </div>
-      </div>
-      <div className="grid grid-cols-2 gap-4">
-        <div>
-          <label className="block text-xs text-slate-500 mb-1">Left Label (Optional)</label>
-          <input type="text" value={element.config.leftLabel || ''} onChange={(e) => update({ ...element, config: { ...element.config, leftLabel: e.target.value } })} className="w-full text-sm border rounded p-1.5 outline-none focus:border-blue-500" placeholder="e.g. Strongly Disagree" />
-        </div>
-        <div>
-          <label className="block text-xs text-slate-500 mb-1">Right Label (Optional)</label>
-          <input type="text" value={element.config.rightLabel || ''} onChange={(e) => update({ ...element, config: { ...element.config, rightLabel: e.target.value } })} className="w-full text-sm border rounded p-1.5 outline-none focus:border-blue-500" placeholder="e.g. Strongly Agree" />
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function TextInputConfig({ element, update }: { element: any, update: (e: any) => void }) {
-  return (
-    <div className="mt-4 space-y-4">
-      <div>
-        <label className="block text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-2">Placeholder Text (Optional)</label>
-        <input 
-          type="text" 
-          value={element.config.placeholder || ''} 
-          onChange={(e) => update({ ...element, config: { ...element.config, placeholder: e.target.value } })} 
-          className="w-full border rounded p-1.5 text-sm outline-none focus:border-blue-500" 
-          placeholder="e.g. Type your answer here..."
-        />
-      </div>
-      <div>
-        <label className="flex items-center gap-2 text-sm text-slate-600 cursor-pointer">
-          <input 
-            type="checkbox" 
-            checked={element.config.multiline || false} 
-            onChange={(e) => update({ ...element, config: { ...element.config, multiline: e.target.checked } })}
-            className="rounded border-slate-300 text-blue-600 focus:ring-blue-500 w-4 h-4 cursor-pointer"
-          />
-          Multi-line response (Paragraph)
-        </label>
-      </div>
-      
-      <ScoringConfigPanel 
-        scoring={element.scoring} 
-        updateScoring={(scoring) => update({ ...element, scoring })}
-        possibleAnswers={[]}
-      />
-    </div>
-  );
-}
-
-// --- MAIN BUILDER ---
 
 export default function BuilderPage() {
-  const params = useParams();
-  
-  const [trials, setTrials] = useState<Trial[]>([]);
-  const [activeTrialId, setActiveTrialId] = useState<string | null>(null);
-  const [mounted, setMounted] = useState(false);
-  const [saveStatus, setSaveStatus] = useState<'saved'|'saving'|'error'>('saved');
+  const params = useParams<{ id: string }>();
+  const experimentId = params.id;
+  const router = useRouter();
+  const editor = useDraftEditor(experimentId);
+  const { definition, update } = editor;
+  const [selectedTrialId, setSelectedTrialId] = useState<string | null>(null);
+  const [navigating, setNavigating] = useState<string | null>(null);
+  const [navError, setNavError] = useState<string | null>(null);
+  const [migration, setMigration] = useState<{ total: number; done: number; failed: number } | null>(null);
+  const migrationStarted = useRef(false);
 
+  const cache = useMemo(() => new AssetCache(), []);
+  useEffect(() => () => cache.dispose(), [cache]);
+
+  const issues = useMemo(() => (definition ? validateDefinition(definition) : []), [definition]);
+  const counts = countBySeverity(issues);
+
+  // Keep a valid selection when trials are added/removed.
+  const selectedTrial = definition?.trials.find((t) => t.id === selectedTrialId) ?? definition?.trials[0] ?? null;
+
+  // Files the old builder stored only in this browser are uploaded once and re-linked.
   useEffect(() => {
-    setMounted(true);
-    const saved = localStorage.getItem(`bitnbuild:experiment:${params.id}`);
-    if (saved) {
-      try {
-        const parsed = JSON.parse(saved);
-        if (parsed.trials) {
-          setTrials(parsed.trials);
-          if (parsed.trials.length > 0) setActiveTrialId(parsed.trials[0].id);
-          return;
+    if (editor.status !== 'ready' || !definition || migrationStarted.current) return;
+    const legacy: Array<{ trialId: string; element: Extract<ExperimentElement, { type: 'IMAGE_VISUAL' | 'AUDIO_SOUND' }> }> = [];
+    for (const t of definition.trials) {
+      for (const el of t.elements) {
+        if ((el.type === 'IMAGE_VISUAL' || el.type === 'AUDIO_SOUND') && !el.config.assetId && el.config.url.startsWith('asset://')) {
+          legacy.push({ trialId: t.id, element: el });
         }
-      } catch (e) {}
-    }
-    
-    // Default Trial Initialization
-    const defaultId = generateId();
-    setTrials([{ 
-      id: defaultId, 
-      name: 'Welcome Trial', 
-      elements: [], 
-      advanceMode: 'response', 
-      durationMs: null 
-    }]);
-    setActiveTrialId(defaultId);
-  }, [params.id]);
-
-  useEffect(() => {
-    if (!mounted) return;
-    setSaveStatus('saving');
-    const timer = setTimeout(() => {
-      try {
-        localStorage.setItem(`bitnbuild:experiment:${params.id}`, JSON.stringify({
-          id: params.id,
-          trials
-        }));
-        setSaveStatus('saved');
-      } catch (e) {
-        setSaveStatus('error');
       }
-    }, 1000);
-    return () => clearTimeout(timer);
-  }, [trials, mounted, params.id]);
-
-  if (!mounted) return <div className="h-screen flex items-center justify-center bg-slate-50">Loading Builder...</div>;
-
-  // --- ACTIONS ---
-
-  const addTrial = () => {
-    const newId = generateId();
-    setTrials([...trials, { 
-      id: newId, 
-      name: `Trial ${trials.length + 1}`, 
-      elements: [], 
-      advanceMode: 'response', 
-      durationMs: null 
-    }]);
-    setActiveTrialId(newId);
-  };
-
-  const duplicateTrial = (trial: Trial, e: React.MouseEvent) => {
-    e.stopPropagation();
-    const newId = generateId();
-    // Deep clone elements and give them new IDs
-    const clonedElements = trial.elements.map(el => ({
-      ...JSON.parse(JSON.stringify(el)),
-      id: generateId()
-    }));
-    
-    setTrials([...trials, { 
-      ...trial, 
-      id: newId, 
-      name: `${trial.name} (Copy)`, 
-      elements: clonedElements 
-    }]);
-  };
-
-  const deleteTrial = (id: string, e: React.MouseEvent) => {
-    e.stopPropagation();
-    const filtered = trials.filter(t => t.id !== id);
-    setTrials(filtered);
-    if (activeTrialId === id && filtered.length > 0) {
-      setActiveTrialId(filtered[0].id);
     }
-  };
-
-  const updateTrialProps = (id: string, updates: Partial<Trial>) => {
-    setTrials(trials.map(t => t.id === id ? { ...t, ...updates } : t));
-  };
-
-  const createElementInstance = (type: string): ExperimentElement => {
-    const id = generateId();
-    switch (type) {
-      case 'TEXT_INSTRUCTION': return { id, type, role: 'DISPLAY', config: { text: '' } } as any;
-      case 'IMAGE_VISUAL': return { id, type, role: 'DISPLAY', config: { url: '', altText: '' } } as any;
-      case 'AUDIO_SOUND': return { id, type, role: 'DISPLAY', config: { url: '', autoplay: false } } as any;
-      case 'FIXATION_CROSS': return { id, type, role: 'DISPLAY', config: { style: '+' } } as any;
-      case 'KEYBOARD_PRESS': return { id, type, role: 'RESPONSE', config: { allowedKeys: [] }, scoring: getDefaultScoring() } as any;
-      case 'MOUSE_CLICK': return { id, type, role: 'RESPONSE', config: {}, scoring: getDefaultScoring() } as any;
-      case 'MULTIPLE_CHOICE': return { 
-        id, type, role: 'RESPONSE', 
-        config: { options: [{ id: generateId(), label: 'Option 1' }, { id: generateId(), label: 'Option 2' }] }, 
-        scoring: getDefaultScoring() 
-      } as any;
-      case 'SLIDER_RATING': return { 
-        id, type, role: 'RESPONSE', 
-        config: { min: 1, max: 7, step: 1, defaultValue: 4 }, 
-        scoring: getDefaultScoring() 
-      } as any;
-      case 'TEXT_INPUT': return {
-        id, type, role: 'RESPONSE',
-        config: { placeholder: '', multiline: false },
-        scoring: getDefaultScoring()
-      } as any;
-      default: throw new Error(`Unknown type ${type}`);
-    }
-  };
-
-  const addElementToTrial = (trialId: string, type: string) => {
-    const el = createElementInstance(type);
-    setTrials(trials.map(t => t.id === trialId ? { ...t, elements: [...t.elements, el] } : t));
-  };
-
-  const updateElement = (trialId: string, elementId: string, updatedEl: ExperimentElement) => {
-    setTrials(trials.map(t => {
-      if (t.id === trialId) {
-        return { ...t, elements: t.elements.map(e => e.id === elementId ? updatedEl : e) };
-      }
-      return t;
-    }));
-  };
-
-  const removeElement = (trialId: string, elementId: string) => {
-    setTrials(trials.map(t => {
-      if (t.id === trialId) {
-        return { ...t, elements: t.elements.filter(e => e.id !== elementId) };
-      }
-      return t;
-    }));
-  };
-  
-  const moveElement = (trialId: string, index: number, direction: 'up' | 'down') => {
-    setTrials(trials.map(t => {
-      if (t.id === trialId) {
-        const els = [...t.elements];
-        if (direction === 'up' && index > 0) {
-          [els[index-1], els[index]] = [els[index], els[index-1]];
-        } else if (direction === 'down' && index < els.length - 1) {
-          [els[index+1], els[index]] = [els[index], els[index+1]];
+    if (legacy.length === 0) return;
+    migrationStarted.current = true;
+    (async () => {
+      let done = 0;
+      let failed = 0;
+      setMigration({ total: legacy.length, done, failed });
+      for (const { trialId, element } of legacy) {
+        try {
+          const blob = await readLegacyAsset(element.config.url);
+          if (!blob) throw new Error('not found in this browser');
+          const file = new File([blob], `${element.type === 'IMAGE_VISUAL' ? 'image' : 'audio'}-${element.id.slice(0, 8)}`, { type: blob.type });
+          const asset = await assetsApi.upload(experimentId, file);
+          update((d) =>
+            updateElement(d, trialId, element.id, (el) =>
+              el.type === 'IMAGE_VISUAL' || el.type === 'AUDIO_SOUND' ? ({ ...el, config: { ...el.config, assetId: asset.id, assetName: asset.originalName, url: '' } } as typeof el) : el
+            )
+          );
+          done += 1;
+        } catch {
+          failed += 1;
         }
-        return { ...t, elements: els };
+        setMigration({ total: legacy.length, done, failed });
       }
-      return t;
-    }));
-  };
+    })();
+  }, [editor.status, definition, experimentId, update]);
 
-  const getElementIcon = (type: string) => {
-    switch (type) {
-      case 'TEXT_INSTRUCTION': return <Type className="w-4 h-4 text-blue-500" />;
-      case 'IMAGE_VISUAL': return <ImageIcon className="w-4 h-4 text-blue-500" />;
-      case 'AUDIO_SOUND': return <Volume2 className="w-4 h-4 text-blue-500" />;
-      case 'FIXATION_CROSS': return <Crosshair className="w-4 h-4 text-blue-500" />;
-      case 'KEYBOARD_PRESS': return <Keyboard className="w-4 h-4 text-emerald-500" />;
-      case 'MOUSE_CLICK': return <MousePointer2 className="w-4 h-4 text-emerald-500" />;
-      case 'MULTIPLE_CHOICE': return <List className="w-4 h-4 text-emerald-500" />;
-      case 'SLIDER_RATING': return <SlidersHorizontal className="w-4 h-4 text-emerald-500" />;
-      case 'TEXT_INPUT': return <Type className="w-4 h-4 text-emerald-500" />;
-      default: return <GripVertical className="w-4 h-4" />;
+  const goTo = async (href: string, label: string) => {
+    setNavError(null);
+    setNavigating(label);
+    try {
+      // Preview and publish read the server draft, so unsaved edits must be stored first.
+      if (!(await editor.saveNow())) throw new Error('Your latest changes could not be saved yet. Resolve the save problem first.');
+      router.push(href);
+    } catch (e) {
+      setNavError(errorMessage(e));
+      setNavigating(null);
     }
   };
 
-  const getElementLabel = (type: string) => {
-    return type.split('_').map(w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()).join(' ');
-  };
-
-  return (
-    <div className="flex flex-col h-[calc(100vh-120px)] -m-8 bg-slate-50">
-      <div className="bg-white border-b px-6 py-3 flex justify-between items-center shrink-0">
-        <div className="flex items-center gap-4">
-          <Link href={`/researcher/experiments/${params.id}`} className="font-semibold hover:text-blue-600">Experiment Setup</Link>
-          <span className="text-slate-300">/</span>
-          <span className="text-sm font-medium">Visual Builder</span>
-        </div>
-        <div className="flex items-center gap-4">
-          <span className={`text-xs ${saveStatus === 'saving' ? 'text-amber-500' : saveStatus === 'error' ? 'text-red-500' : 'text-slate-500'}`}>
-            {saveStatus === 'saving' ? 'Saving...' : saveStatus === 'error' ? 'Save Failed' : 'All changes saved'}
-          </span>
-          <Link href={`/researcher/experiments/${params.id}/preview`} className="flex items-center gap-2 bg-slate-900 text-white px-4 py-2 rounded-md text-sm font-medium hover:bg-slate-800">
-            <Play className="w-4 h-4" /> Preview
+  if (editor.status === 'loading') {
+    return (
+      <div className="h-screen flex items-center justify-center text-slate-500 gap-2">
+        <Loader2 className="w-5 h-5 animate-spin" /> Loading builder…
+      </div>
+    );
+  }
+  if (editor.status === 'error' || !definition) {
+    return (
+      <div className="h-screen flex flex-col items-center justify-center gap-4 p-6 text-center">
+        <p className="text-red-600">{editor.loadError ?? 'The experiment could not be loaded.'}</p>
+        <div className="flex gap-3">
+          <button type="button" onClick={() => void editor.reloadFromServer()} className="px-4 py-2 rounded-md bg-slate-900 text-white text-sm">
+            Try again
+          </button>
+          <Link href="/researcher/experiments" className="px-4 py-2 rounded-md border text-sm">
+            Back to experiments
           </Link>
         </div>
       </div>
-      
-      <div className="flex flex-1 overflow-hidden">
-        {/* Canvas */}
-        <div className="flex-1 overflow-y-auto p-8 bg-slate-100 flex flex-col items-center">
-          <div className="w-full max-w-3xl space-y-6 pb-20">
-            {trials.length === 0 && (
-              <div className="text-center py-12 text-slate-400">No trials yet. Click "Add Next Trial" below.</div>
+    );
+  }
+
+  const trialIssues = (trialId: string) => issues.filter((i) => i.trialId === trialId);
+  const edit = (trialId: string, elementId: string) => (fn: (el: ExperimentElement) => ExperimentElement) =>
+    update((d) => updateElement(d, trialId, elementId, fn));
+
+  const onAddTrial = () => {
+    let newId = '';
+    update((d) => {
+      const out = addTrial(d, selectedTrial?.id);
+      newId = out.trialId;
+      return out.definition;
+    });
+    if (newId) setSelectedTrialId(newId);
+  };
+
+  const onDuplicateTrial = (trialId: string) => {
+    let newId: string | null = null;
+    update((d) => {
+      const out = duplicateTrialIn(d, trialId);
+      newId = out.trialId;
+      return out.definition;
+    });
+    if (newId) setSelectedTrialId(newId);
+  };
+
+  const onDeleteTrial = (trial: Trial, index: number) => {
+    if (!window.confirm(`Delete "${trial.name || `Trial ${index + 1}`}" and its ${trial.elements.length} element(s)?`)) return;
+    const neighbour = definition.trials[index + 1] ?? definition.trials[index - 1] ?? null;
+    update((d) => deleteTrial(d, trial.id));
+    setSelectedTrialId(neighbour?.id ?? null);
+  };
+
+  const selectIssue = (issue: ValidationIssue) => {
+    if (issue.trialId) setSelectedTrialId(issue.trialId);
+    if (issue.elementId) {
+      requestAnimationFrame(() => document.getElementById(`element-${issue.elementId}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' }));
+    }
+  };
+
+  return (
+    <div className="h-screen flex flex-col bg-slate-50">
+      {/* Header */}
+      <header className="bg-white border-b px-4 sm:px-6 py-3 flex flex-wrap gap-3 justify-between items-center shrink-0">
+        <div className="flex items-center gap-3 min-w-0">
+          <Link href={`/researcher/experiments/${experimentId}`} className="inline-flex items-center gap-1 text-sm text-slate-600 hover:text-blue-600">
+            <ArrowLeft className="w-4 h-4" /> Experiment
+          </Link>
+          <span className="text-slate-300">/</span>
+          <h1 className="text-sm font-semibold truncate">Builder</h1>
+          <SaveIndicator state={editor.saveState} error={editor.saveError} lastSavedAt={editor.lastSavedAt} onRetry={() => void editor.saveNow()} />
+        </div>
+        <div className="flex items-center gap-2">
+          <span className="text-xs text-slate-500 hidden sm:inline">
+            {definition.trials.length} trial{definition.trials.length === 1 ? '' : 's'} · <span className={counts.error ? 'text-red-600 font-medium' : ''}>{counts.error} error{counts.error === 1 ? '' : 's'}</span> ·{' '}
+            <span className={counts.warning ? 'text-amber-700' : ''}>{counts.warning} warning{counts.warning === 1 ? '' : 's'}</span>
+          </span>
+          <button
+            type="button"
+            disabled={!!navigating}
+            onClick={() => void goTo(`/researcher/experiments/${experimentId}/preview`, 'preview')}
+            className="inline-flex items-center gap-1.5 px-3 py-2 rounded-md border bg-white text-sm font-medium hover:bg-slate-50 disabled:opacity-50"
+          >
+            {navigating === 'preview' ? <Loader2 className="w-4 h-4 animate-spin" /> : <Play className="w-4 h-4" />} Preview
+          </button>
+          <button
+            type="button"
+            disabled={!!navigating}
+            onClick={() => void goTo(`/researcher/experiments/${experimentId}/publish`, 'publish')}
+            className="inline-flex items-center gap-1.5 px-3 py-2 rounded-md bg-blue-600 text-white text-sm font-medium hover:bg-blue-700 disabled:opacity-50"
+          >
+            {navigating === 'publish' ? <Loader2 className="w-4 h-4 animate-spin" /> : <Rocket className="w-4 h-4" />} Publish…
+          </button>
+        </div>
+      </header>
+
+      {/* Banners */}
+      <div className="shrink-0 space-y-px">
+        {navError && <div className="bg-red-50 text-red-700 text-sm px-6 py-2">{navError}</div>}
+        {editor.saveState === 'conflict' && (
+          <div className="bg-red-50 border-b border-red-200 text-red-800 text-sm px-6 py-2 flex flex-wrap items-center gap-3">
+            <AlertTriangle className="w-4 h-4" /> This experiment was saved from another tab or session. Your latest edits are not saved.
+            <button type="button" onClick={() => void editor.reloadFromServer()} className="underline font-medium">
+              Load their version
+            </button>
+            <button type="button" onClick={() => void editor.overwriteServer()} className="underline font-medium">
+              Keep my version
+            </button>
+          </div>
+        )}
+        {editor.restorableBackup && (
+          <div className="bg-amber-50 border-b border-amber-200 text-amber-900 text-sm px-6 py-2 flex flex-wrap items-center gap-3">
+            Unsaved changes from {new Date(editor.restorableBackup.savedAt).toLocaleString()} were found in this browser.
+            <button type="button" onClick={editor.restoreBackup} className="underline font-medium">
+              Restore them
+            </button>
+            <button type="button" onClick={editor.discardBackup} className="underline">
+              Discard
+            </button>
+          </div>
+        )}
+        {editor.importedLegacyDraft && (
+          <div className="bg-blue-50 border-b border-blue-200 text-blue-900 text-sm px-6 py-2">Your draft stored in this browser by the previous builder was imported and is now saved to your account.</div>
+        )}
+        {migration && (
+          <div className="bg-blue-50 border-b border-blue-200 text-blue-900 text-sm px-6 py-2">
+            Uploading files stored only in this browser: {migration.done}/{migration.total} done
+            {migration.failed > 0 && <span className="text-red-700"> — {migration.failed} could not be found here; re-upload them (marked as errors).</span>}
+          </div>
+        )}
+      </div>
+
+      <div className="flex flex-1 overflow-hidden flex-col lg:flex-row">
+        {/* Trials */}
+        <main className="flex-1 overflow-y-auto p-4 sm:p-6">
+          <div className="max-w-3xl mx-auto space-y-3 pb-24">
+            {definition.trials.length === 0 && (
+              <div className="text-center py-16 border-2 border-dashed rounded-xl text-slate-500">
+                <p className="font-medium">No trials yet.</p>
+                <p className="text-sm">Add a trial, then add stimuli and responses to it.</p>
+              </div>
             )}
-            
-            {trials.map((trial, idx) => (
-              <div 
-                key={trial.id} 
-                className={`bg-white border rounded-xl shadow-sm overflow-hidden transition-all ${activeTrialId === trial.id ? 'ring-2 ring-blue-500 border-transparent' : 'hover:border-blue-300'}`}
-                onClick={() => setActiveTrialId(trial.id)}
-              >
-                <div className="bg-slate-50 px-4 py-3 border-b flex justify-between items-center cursor-pointer">
-                  <div className="flex items-center gap-3">
-                    <div className="w-6 h-6 rounded bg-blue-100 text-blue-700 flex items-center justify-center text-xs font-bold">{idx + 1}</div>
-                    <span className="font-semibold text-slate-900">{trial.name}</span>
+            {definition.trials.map((trial, index) => {
+              const selected = trial.id === selectedTrial?.id;
+              const tIssues = trialIssues(trial.id);
+              const tCounts = countBySeverity(tIssues);
+              return (
+                <section key={trial.id} aria-label={`Trial ${index + 1}`} className={`bg-white border rounded-xl shadow-sm ${selected ? 'ring-2 ring-blue-500 border-transparent' : ''}`}>
+                  <div className="px-4 py-3 flex items-center gap-3">
+                    <button type="button" onClick={() => setSelectedTrialId(trial.id)} className="flex-1 min-w-0 flex items-center gap-3 text-left" aria-expanded={selected}>
+                      <span className="w-7 h-7 shrink-0 rounded bg-blue-100 text-blue-700 flex items-center justify-center text-xs font-bold">{index + 1}</span>
+                      <span className="min-w-0">
+                        <span className="block font-semibold text-slate-900 truncate">{trial.name || 'Untitled trial'}</span>
+                        <span className="block text-xs text-slate-500 truncate">
+                          {ADVANCE_MODE_LABEL[trial.advanceMode]}
+                          {trial.durationMs && (trial.advanceMode === 'timed' || trial.advanceMode === 'response_or_timeout') ? ` · ${trial.durationMs} ms` : ''}
+                          {trial.condition ? ` · condition ${trial.condition}` : ''} · {trial.elements.length} element{trial.elements.length === 1 ? '' : 's'}
+                        </span>
+                      </span>
+                      {tCounts.error > 0 && <span className="shrink-0 text-xs px-2 py-0.5 rounded-full bg-red-100 text-red-700">{tCounts.error} error{tCounts.error === 1 ? '' : 's'}</span>}
+                      {tCounts.error === 0 && tCounts.warning > 0 && <span className="shrink-0 text-xs px-2 py-0.5 rounded-full bg-amber-100 text-amber-800">{tCounts.warning} warning{tCounts.warning === 1 ? '' : 's'}</span>}
+                    </button>
+                    <div className="flex items-center gap-0.5 text-slate-400">
+                      <button type="button" aria-label="Move trial up" disabled={index === 0} onClick={() => update((d) => moveTrial(d, trial.id, -1))} className="p-1.5 rounded hover:bg-slate-100 hover:text-slate-700 disabled:opacity-30">
+                        <ArrowUp className="w-4 h-4" />
+                      </button>
+                      <button type="button" aria-label="Move trial down" disabled={index === definition.trials.length - 1} onClick={() => update((d) => moveTrial(d, trial.id, 1))} className="p-1.5 rounded hover:bg-slate-100 hover:text-slate-700 disabled:opacity-30">
+                        <ArrowDown className="w-4 h-4" />
+                      </button>
+                      <button type="button" aria-label="Duplicate trial" onClick={() => onDuplicateTrial(trial.id)} className="p-1.5 rounded hover:bg-slate-100 hover:text-slate-700">
+                        <Copy className="w-4 h-4" />
+                      </button>
+                      <button type="button" aria-label="Delete trial" onClick={() => onDeleteTrial(trial, index)} className="p-1.5 rounded hover:bg-red-50 hover:text-red-600">
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    </div>
                   </div>
-                  <div className="flex items-center gap-3 text-slate-400">
-                    <Settings className="w-4 h-4 hover:text-slate-700 transition-colors" />
-                    <Copy className="w-4 h-4 hover:text-slate-700 transition-colors" onClick={(e) => duplicateTrial(trial, e)} />
-                    <Trash2 className="w-4 h-4 hover:text-red-500 transition-colors" onClick={(e) => deleteTrial(trial.id, e)} />
-                  </div>
-                </div>
-                
-                <div className="p-5">
-                  {/* Element List Area */}
-                  <div className="mb-6">
-                    <h4 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-4">Trial Elements</h4>
-                    {trial.elements.length === 0 ? (
-                      <div className="border border-dashed border-slate-300 rounded-lg p-8 text-center bg-slate-50">
-                        <p className="text-sm text-slate-500">No elements added.</p>
-                        <p className="text-xs text-slate-400 mt-1">Click a button below to add stimuli or responses.</p>
-                      </div>
-                    ) : (
-                      <div className="space-y-4">
-                        {trial.elements.map((el, i) => (
-                          <div key={el.id} className="bg-white border border-slate-200 rounded-lg p-4 shadow-sm relative group">
-                            <div className="flex items-center justify-between mb-2">
+
+                  {selected && (
+                    <div className="border-t px-4 py-4 space-y-4">
+                      {trial.elements.length === 0 && <p className="text-sm text-slate-500 text-center py-4">This trial is empty. Add a stimulus or a response below.</p>}
+                      {trial.elements.map((el, elIndex) => {
+                        const meta = ELEMENT_META[el.type];
+                        const Icon = meta.icon;
+                        const elIssues = tIssues.filter((i) => i.elementId === el.id);
+                        return (
+                          <div key={el.id} id={`element-${el.id}`} className={`rounded-lg border p-4 ${elIssues.some((i) => i.severity === 'error') ? 'border-red-300' : 'border-slate-200'}`}>
+                            <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
                               <div className="flex items-center gap-2">
-                                {getElementIcon(el.type)}
-                                <span className="text-sm font-bold text-slate-800">{getElementLabel(el.type)}</span>
-                                <span className="text-[10px] bg-slate-100 text-slate-500 px-1.5 py-0.5 rounded">{el.role}</span>
+                                <Icon className={`w-4 h-4 ${el.role === 'RESPONSE' ? 'text-emerald-600' : 'text-blue-600'}`} />
+                                <span className="text-sm font-semibold">{meta.label}</span>
+                                <span className="text-[10px] uppercase tracking-wide bg-slate-100 text-slate-500 px-1.5 py-0.5 rounded">{el.role === 'RESPONSE' ? 'Response' : 'Stimulus'}</span>
+                                {el.role === 'RESPONSE' && (
+                                  <label className="flex items-center gap-1 text-xs text-slate-600 ml-2">
+                                    <input type="checkbox" className="accent-blue-600" checked={el.required} onChange={(e) => edit(trial.id, el.id)((x) => (x.role === 'RESPONSE' ? { ...x, required: e.target.checked } : x))} />
+                                    Required
+                                  </label>
+                                )}
                               </div>
-                              <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                                <button onClick={() => moveElement(trial.id, i, 'up')} disabled={i===0} className="p-1 hover:bg-slate-100 rounded text-slate-400 disabled:opacity-30"><ArrowUp className="w-3 h-3" /></button>
-                                <button onClick={() => moveElement(trial.id, i, 'down')} disabled={i===trial.elements.length-1} className="p-1 hover:bg-slate-100 rounded text-slate-400 disabled:opacity-30"><ArrowDown className="w-3 h-3" /></button>
-                                <div className="w-px h-3 bg-slate-200 mx-1"></div>
-                                <button onClick={() => removeElement(trial.id, el.id)} className="p-1 hover:bg-red-50 hover:text-red-500 rounded text-slate-400"><Trash2 className="w-3 h-3" /></button>
+                              <div className="flex items-center gap-0.5 text-slate-400">
+                                <button type="button" aria-label="Move element up" disabled={elIndex === 0} onClick={() => update((d) => moveElement(d, trial.id, el.id, -1))} className="p-1 rounded hover:bg-slate-100 disabled:opacity-30">
+                                  <ArrowUp className="w-3.5 h-3.5" />
+                                </button>
+                                <button type="button" aria-label="Move element down" disabled={elIndex === trial.elements.length - 1} onClick={() => update((d) => moveElement(d, trial.id, el.id, 1))} className="p-1 rounded hover:bg-slate-100 disabled:opacity-30">
+                                  <ArrowDown className="w-3.5 h-3.5" />
+                                </button>
+                                <button type="button" aria-label="Duplicate element" onClick={() => update((d) => duplicateElementIn(d, trial.id, el.id))} className="p-1 rounded hover:bg-slate-100">
+                                  <Copy className="w-3.5 h-3.5" />
+                                </button>
+                                <button type="button" aria-label="Delete element" onClick={() => update((d) => deleteElement(d, trial.id, el.id))} className="p-1 rounded hover:bg-red-50 hover:text-red-600">
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                </button>
                               </div>
                             </div>
-                            
-                            {el.type === 'TEXT_INSTRUCTION' && <TextInstructionConfig element={el} update={(updated) => updateElement(trial.id, el.id, updated)} />}
-                            {el.type === 'IMAGE_VISUAL' && <ImageVisualConfig element={el} update={(updated) => updateElement(trial.id, el.id, updated)} />}
-                            {el.type === 'AUDIO_SOUND' && <AudioSoundConfig element={el} update={(updated) => updateElement(trial.id, el.id, updated)} />}
-                            {el.type === 'FIXATION_CROSS' && <FixationCrossConfig element={el} update={(updated) => updateElement(trial.id, el.id, updated)} />}
-                            {el.type === 'KEYBOARD_PRESS' && <KeyboardConfig element={el} update={(updated) => updateElement(trial.id, el.id, updated)} />}
-                            {el.type === 'MULTIPLE_CHOICE' && <MultipleChoiceConfig element={el} update={(updated) => updateElement(trial.id, el.id, updated)} />}
-                            {el.type === 'SLIDER_RATING' && <SliderRatingConfig element={el} update={(updated) => updateElement(trial.id, el.id, updated)} />}
-                            {el.type === 'TEXT_INPUT' && <TextInputConfig element={el} update={(updated) => updateElement(trial.id, el.id, updated)} />}
-                            {el.type === 'MOUSE_CLICK' && <div className="text-sm text-slate-500 italic mt-2">Records timestamp and coordinates on click.</div>}
+                            <ElementEditor element={el} edit={edit(trial.id, el.id)} experimentId={experimentId} cache={cache} />
+                            {elIssues.length > 0 && (
+                              <div className="mt-3">
+                                <IssueList issues={elIssues} />
+                              </div>
+                            )}
                           </div>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                  
-                  {/* Add Element Buttons */}
-                  <div className="border-t border-slate-100 pt-4 mt-4 grid grid-cols-2 gap-8">
-                    <div>
-                      <h4 className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-2">Add Stimulus</h4>
-                      <div className="flex flex-wrap gap-2">
-                        {['TEXT_INSTRUCTION', 'IMAGE_VISUAL', 'AUDIO_SOUND', 'FIXATION_CROSS'].map(type => (
-                          <button key={type} onClick={() => addElementToTrial(trial.id, type)} className="px-2.5 py-1.5 border border-slate-200 rounded text-xs hover:bg-slate-50 hover:border-blue-300 text-slate-600 flex items-center gap-1.5 transition-colors bg-white">
-                            {getElementIcon(type)} {getElementLabel(type)}
-                          </button>
-                        ))}
+                        );
+                      })}
+
+                      <div className="grid sm:grid-cols-2 gap-4 pt-2 border-t">
+                        <AddElementGroup title="Add stimulus" types={STIMULUS_TYPES} onAdd={(type) => update((d) => addElement(d, trial.id, type).definition)} />
+                        <AddElementGroup title="Add response" types={RESPONSE_TYPES} onAdd={(type) => update((d) => addElement(d, trial.id, type).definition)} />
                       </div>
                     </div>
-                    <div>
-                      <h4 className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-2">Add Response</h4>
-                      <div className="flex flex-wrap gap-2">
-                        {['KEYBOARD_PRESS', 'MOUSE_CLICK', 'MULTIPLE_CHOICE', 'SLIDER_RATING', 'TEXT_INPUT'].map(type => (
-                          <button key={type} onClick={() => addElementToTrial(trial.id, type)} className="px-2.5 py-1.5 border border-slate-200 rounded text-xs hover:bg-slate-50 hover:border-emerald-300 text-slate-600 flex items-center gap-1.5 transition-colors bg-white">
-                            {getElementIcon(type)} {getElementLabel(type)}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            ))}
-            
+                  )}
+                </section>
+              );
+            })}
             <div className="flex justify-center pt-2">
-              <button onClick={addTrial} className="py-2.5 px-6 border border-slate-300 rounded-full text-slate-600 font-medium hover:bg-white shadow-sm flex items-center gap-2 transition-all hover:border-blue-400 hover:text-blue-600 bg-slate-50">
-                <Plus className="w-4 h-4" /> Add Next Trial
+              <button type="button" onClick={onAddTrial} className="inline-flex items-center gap-2 py-2.5 px-5 border border-slate-300 rounded-full text-sm font-medium text-slate-700 bg-white hover:border-blue-400 hover:text-blue-700 shadow-sm">
+                <Plus className="w-4 h-4" /> Add trial
               </button>
             </div>
           </div>
-        </div>
+        </main>
 
-        {/* Properties Inspector */}
-        <div className="w-80 bg-white border-l flex flex-col shrink-0">
-          <div className="p-4 font-medium border-b text-sm bg-slate-50">
-            {activeTrialId ? `Properties: ${trials.find(t => t.id === activeTrialId)?.name || ''}` : 'Properties Inspector'}
+        {/* Inspector */}
+        <aside className="w-full lg:w-96 bg-white border-t lg:border-t-0 lg:border-l overflow-y-auto shrink-0 max-h-[45vh] lg:max-h-none">
+          {selectedTrial ? (
+            <TrialSettings key={selectedTrial.id} trial={selectedTrial} onChange={(patch) => update((d) => updateTrial(d, selectedTrial.id, patch))} />
+          ) : (
+            <p className="p-5 text-sm text-slate-500">Select a trial to edit its settings.</p>
+          )}
+          <div className="p-5 border-t space-y-3">
+            <h2 className="text-sm font-semibold">Experiment settings</h2>
+            <Toggle
+              label="Randomize trial order for each participant"
+              hint="Trials marked “keep position” stay where they are (e.g. instructions)."
+              checked={definition.settings.randomizeTrialOrder}
+              onChange={(randomizeTrialOrder) => update((d) => ({ ...d, settings: { ...d.settings, randomizeTrialOrder } }))}
+            />
+            <Link href={`/researcher/experiments/${experimentId}/participants`} className="block text-sm text-blue-600 hover:underline">
+              Participant access, reward and attempts →
+            </Link>
           </div>
-          <div className="overflow-y-auto p-5 space-y-6">
-            {activeTrialId ? (() => {
-              const trial = trials.find(t => t.id === activeTrialId);
-              if (!trial) return null;
-              
-              return (
-                <div>
-                  <h3 className="font-semibold mb-4 text-slate-800">Trial Execution Settings</h3>
-                  <div className="space-y-5 text-sm">
-                    <div>
-                      <label className="block text-slate-600 font-medium mb-1">Trial Name</label>
-                      <input 
-                        type="text" 
-                        className="w-full border rounded-md px-3 py-2 outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition-all" 
-                        value={trial.name}
-                        onChange={(e) => updateTrialProps(trial.id, { name: e.target.value })}
-                      />
-                    </div>
-                    
-                    <div>
-                      <label className="block text-slate-600 font-medium mb-1">Advance Mode</label>
-                      <select 
-                        className="w-full border rounded-md px-3 py-2 outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition-all bg-white"
-                        value={trial.advanceMode}
-                        onChange={(e) => updateTrialProps(trial.id, { advanceMode: e.target.value as AdvanceMode })}
-                      >
-                        <option value="response">Wait for response</option>
-                        <option value="timed">Auto-advance (Timed)</option>
-                        <option value="response_or_timeout">Response OR Timeout</option>
-                        <option value="manual">Manual continuation</option>
-                      </select>
-                      <p className="text-xs text-slate-400 mt-1.5 leading-relaxed">
-                        {trial.advanceMode === 'response' && 'Trial stays on screen indefinitely until the participant submits a response.'}
-                        {trial.advanceMode === 'timed' && 'Trial advances automatically after a set duration, ignoring responses.'}
-                        {trial.advanceMode === 'response_or_timeout' && 'Trial advances if user responds, or when time runs out (whichever comes first).'}
-                        {trial.advanceMode === 'manual' && 'Trial stays until explicit manual intervention or special logic.'}
-                      </p>
-                    </div>
-
-                    {(trial.advanceMode === 'timed' || trial.advanceMode === 'response_or_timeout') && (
-                      <div>
-                        <label className="block text-slate-600 font-medium mb-1">Duration / Timeout (ms)</label>
-                        <input 
-                          type="number" 
-                          className="w-full border border-slate-200 rounded-md px-3 py-2 outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition-all" 
-                          value={trial.durationMs || ''}
-                          onChange={(e) => updateTrialProps(trial.id, { durationMs: e.target.value ? Number(e.target.value) : null })}
-                          placeholder="e.g. 2000"
-                        />
-                      </div>
-                    )}
-                  </div>
-                  
-                  {/* Validation warnings panel could go here */}
-                  <div className="mt-8 pt-4 border-t border-slate-100">
-                    <h3 className="font-semibold mb-3 text-slate-800 text-xs uppercase tracking-wider text-slate-400">Validation</h3>
-                    {trial.elements.length === 0 ? (
-                      <div className="text-xs text-red-500 bg-red-50 p-2 rounded border border-red-100">ERROR: Trial has no elements.</div>
-                    ) : (trial.advanceMode === 'response' && !trial.elements.some(e => e.role === 'RESPONSE')) ? (
-                      <div className="text-xs text-red-500 bg-red-50 p-2 rounded border border-red-100">ERROR: Advance Mode requires a response, but no response elements exist.</div>
-                    ) : (
-                      <div className="text-xs text-emerald-600 bg-emerald-50 p-2 rounded border border-emerald-100 flex items-center gap-1.5">
-                        <div className="w-1.5 h-1.5 rounded-full bg-emerald-500"></div> Trial configuration looks valid.
-                      </div>
-                    )}
-                  </div>
-                </div>
-              );
-            })() : (
-              <p className="text-sm text-slate-400">Select a trial to edit its properties.</p>
-            )}
+          <div className="p-5 border-t space-y-3">
+            <h2 className="text-sm font-semibold">
+              Validation <span className="font-normal text-slate-500">({counts.error} errors, {counts.warning} warnings)</span>
+            </h2>
+            <IssueList issues={issues} onSelect={selectIssue} empty="No problems found — ready to preview and publish." />
           </div>
-        </div>
+        </aside>
       </div>
+    </div>
+  );
+}
+
+function AddElementGroup({ title, types, onAdd }: { title: string; types: ElementType[]; onAdd: (type: ElementType) => void }) {
+  return (
+    <div>
+      <h3 className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">{title}</h3>
+      <div className="flex flex-wrap gap-2">
+        {types.map((type) => {
+          const meta = ELEMENT_META[type];
+          const Icon = meta.icon;
+          return (
+            <button key={type} type="button" title={meta.description} onClick={() => onAdd(type)} className="inline-flex items-center gap-1.5 px-2.5 py-1.5 border border-slate-200 rounded-md text-xs text-slate-700 bg-white hover:border-blue-300 hover:bg-slate-50">
+              <Icon className="w-3.5 h-3.5" /> {meta.label}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function ElementEditor({ element, edit, experimentId, cache }: { element: ExperimentElement; edit: (fn: (el: ExperimentElement) => ExperimentElement) => void; experimentId: string; cache: AssetCache }) {
+  // Each editor receives an updater limited to its own element type.
+  function typed<T extends ExperimentElement>(type: T['type']) {
+    return (fn: (el: T) => T) => edit((el) => (el.type === type ? fn(el as T) : el));
+  }
+  switch (element.type) {
+    case 'TEXT_INSTRUCTION':
+      return <TextInstructionEditor element={element} edit={typed('TEXT_INSTRUCTION')} />;
+    case 'FIXATION_CROSS':
+      return <FixationEditor element={element} edit={typed('FIXATION_CROSS')} />;
+    case 'IMAGE_VISUAL':
+    case 'AUDIO_SOUND':
+      return (
+        <MediaEditor
+          element={element}
+          experimentId={experimentId}
+          cache={cache}
+          onChange={(fn) => edit((el) => (el.type === 'IMAGE_VISUAL' || el.type === 'AUDIO_SOUND' ? fn(el) : el))}
+        />
+      );
+    case 'KEYBOARD_PRESS':
+      return <KeyboardEditor element={element} edit={typed('KEYBOARD_PRESS')} />;
+    case 'MOUSE_CLICK':
+      return <MouseClickEditor element={element} edit={typed('MOUSE_CLICK')} />;
+    case 'MULTIPLE_CHOICE':
+      return <ChoiceEditor element={element} edit={typed('MULTIPLE_CHOICE')} />;
+    case 'SLIDER_RATING':
+      return <SliderEditor element={element} edit={typed('SLIDER_RATING')} />;
+    case 'TEXT_INPUT':
+      return <TextInputEditor element={element} edit={typed('TEXT_INPUT')} />;
+    case 'YES_NO':
+      return <YesNoEditor element={element} edit={typed('YES_NO')} />;
+  }
+}
+
+function TrialSettings({ trial, onChange }: { trial: Trial; onChange: (patch: Partial<Omit<Trial, 'id' | 'elements'>>) => void }) {
+  const needsDuration = trial.advanceMode === 'timed' || trial.advanceMode === 'response_or_timeout';
+  return (
+    <div className="p-5 space-y-4">
+      <h2 className="text-sm font-semibold">Trial settings</h2>
+      <TextField label="Name" value={trial.name} maxLength={300} onChange={(name) => onChange({ name })} />
+      <Field label="How the trial ends" hint={ADVANCE_MODE_HELP[trial.advanceMode]}>
+        {(id) => (
+          <select
+            id={id}
+            className={inputClass}
+            value={trial.advanceMode}
+            onChange={(e) => {
+              const advanceMode = e.target.value as AdvanceMode;
+              const timed = advanceMode === 'timed' || advanceMode === 'response_or_timeout';
+              onChange({ advanceMode, durationMs: timed ? trial.durationMs ?? 2000 : trial.durationMs });
+            }}
+          >
+            {ADVANCE_MODES.map((m) => (
+              <option key={m} value={m}>
+                {ADVANCE_MODE_LABEL[m]}
+              </option>
+            ))}
+          </select>
+        )}
+      </Field>
+      {needsDuration && (
+        <NumberField
+          label={trial.advanceMode === 'timed' ? 'Duration (ms)' : 'Time limit (ms)'}
+          integer
+          min={1}
+          allowNull
+          value={trial.durationMs}
+          onChange={(durationMs) => onChange({ durationMs })}
+          hint="Measured from stimulus onset. Browser timers are accurate to about one screen refresh (~16 ms)."
+        />
+      )}
+      <TextField label="Condition label" value={trial.condition} maxLength={100} placeholder="e.g. congruent" hint="Results are grouped by this label." onChange={(condition) => onChange({ condition })} />
+      <Toggle label="Keep position when randomizing" checked={trial.fixedPosition} onChange={(fixedPosition) => onChange({ fixedPosition })} />
     </div>
   );
 }

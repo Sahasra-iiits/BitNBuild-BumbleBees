@@ -1,25 +1,24 @@
 // ==============================================================================
 // SynapseLab — Express Request Helpers
 // ==============================================================================
-// Helper to safely extract typed params from Express v5 requests.
+// Express v5 types params/query values as string | string[] | ParsedQs; these
+// helpers return plain strings after the validate() middleware has run.
 
 import { Request } from 'express';
 
-/**
- * Safely extract a string parameter from req.params.
- * Express v5 types params as string | string[]. This helper handles both.
- */
 export function getParam(req: Request, key: string): string {
-  const val = (req.params as Record<string, any>)[key];
-  if (Array.isArray(val)) return val[0] || '';
-  return typeof val === 'string' ? val : String(val || '');
+  const val = (req.params as Record<string, unknown>)[key];
+  if (Array.isArray(val)) return typeof val[0] === 'string' ? val[0] : '';
+  return typeof val === 'string' ? val : '';
 }
 
-/**
- * Safely extract a string query parameter.
- */
 export function getQuery(req: Request, key: string): string | undefined {
-  const val = req.query[key];
-  if (Array.isArray(val)) return val[0] as string;
-  return val as string | undefined;
+  const val = (req.query as Record<string, unknown>)[key];
+  if (Array.isArray(val)) return typeof val[0] === 'string' ? val[0] : undefined;
+  return typeof val === 'string' ? val : undefined;
+}
+
+/** Validated query object (validate({ query }) replaces req.query with the parsed value). */
+export function validatedQuery<T>(req: Request): T {
+  return req.query as unknown as T;
 }

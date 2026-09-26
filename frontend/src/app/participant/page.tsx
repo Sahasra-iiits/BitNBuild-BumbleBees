@@ -1,65 +1,69 @@
 "use client";
 import Link from 'next/link';
-import { Star, ShieldCheck, Trophy, ChevronRight } from 'lucide-react';
+import { useQuery } from '@tanstack/react-query';
+import { ChevronRight, ShieldCheck, Star } from 'lucide-react';
 import { useAuth } from '@/lib/context/AuthContext';
+import { sessionsApi } from '@/lib/api/sessions';
 
 export default function ParticipantDashboard() {
-  const { user, isLoading } = useAuth();
-  
-  if (isLoading) return <div className="p-12 text-center text-slate-500">Loading profile...</div>;
-
+  const { user } = useAuth();
+  const sessions = useQuery({ queryKey: ['my-sessions'], queryFn: () => sessionsApi.listMine(), refetchOnMount: 'always' });
   const profile = user?.participantProfile;
-  const rating = profile?.qualityRating ?? 1200; // Like a chess ELO rating! (default 1200)
-  const completedCount = profile?.completedSessionsCount ?? 0;
-  
-  // Calculate a level based on completed studies (e.g. 1 level per 5 studies)
-  const currentLevel = Math.floor(completedCount / 5) + 1;
-  const nextLevelThreshold = currentLevel * 5;
-  const neededForNextLevel = nextLevelThreshold - completedCount;
-  const progressPercent = ((completedCount % 5) / 5) * 100;
+  const unfinished = (sessions.data ?? []).filter((s) => (s.status === 'STARTED' || s.status === 'IN_PROGRESS') && s.experiment.status === 'PUBLISHED');
 
   return (
-    <div className="max-w-5xl mx-auto space-y-8 p-6">
-      <div className="flex justify-between items-center">
+    <div className="max-w-5xl mx-auto space-y-8 p-4 sm:p-6">
+      <div className="flex flex-wrap gap-4 justify-between items-center">
         <div>
-          <h1 className="text-3xl font-bold tracking-tight">Welcome back, {user?.email.split('@')[0] || 'Participant'}</h1>
-          <p className="text-slate-500 mt-1">Ready to contribute to science today?</p>
+          <h1 className="text-3xl font-bold tracking-tight">Welcome back</h1>
+          <p className="text-slate-500 mt-1">Participant code {profile?.pseudonymousId}</p>
         </div>
-        <div className="text-right flex items-center gap-4 bg-white p-4 rounded-xl shadow-sm border border-slate-100">
+        <Link href="/participant/rating" className="flex items-center gap-4 bg-white p-4 rounded-xl border hover:border-blue-300">
           <div>
-            <div className="text-xs font-bold text-slate-400 uppercase">Participant Rating</div>
-            <div className="text-2xl font-black text-blue-600">{Math.round(rating)}</div>
+            <div className="text-xs font-bold text-slate-400 uppercase">Participant rating</div>
+            <div className="text-2xl font-black text-blue-600">{profile ? Math.round(profile.qualityRating) : '—'}</div>
           </div>
-          <ShieldCheck className="w-10 h-10 text-emerald-500" />
-        </div>
-      </div>
-
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-        <Link href="/participant/experiments" className="group bg-blue-600 text-white p-6 rounded-2xl shadow-md hover:bg-blue-700 transition-colors">
-          <h3 className="text-xl font-bold mb-2">Find Experiments</h3>
-          <p className="text-blue-100 text-sm mb-4">Discover new studies matching your eligibility.</p>
-          <div className="flex justify-end"><ChevronRight className="w-6 h-6 transform group-hover:translate-x-1 transition-transform" /></div>
+          <ShieldCheck className="w-9 h-9 text-emerald-500" />
         </Link>
-        <div className="bg-white p-6 border rounded-2xl shadow-sm">
-          <div className="flex items-center gap-2 mb-2 text-indigo-600"><Trophy className="w-5 h-5"/> <h3 className="font-bold">Level {currentLevel} Contributor</h3></div>
-          <p className="text-slate-500 text-sm mb-4">Complete {neededForNextLevel} more studies to reach Level {currentLevel + 1}.</p>
-          <div className="w-full bg-slate-100 rounded-full h-2">
-            <div className="bg-indigo-600 h-2 rounded-full" style={{ width: `${progressPercent}%` }}></div>
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <Link href="/participant/experiments" className="group bg-blue-600 text-white p-6 rounded-2xl hover:bg-blue-700">
+          <h3 className="text-xl font-bold mb-2">Find experiments</h3>
+          <p className="text-blue-100 text-sm">Browse studies open to you.</p>
+          <ChevronRight className="w-6 h-6 ml-auto mt-4 group-hover:translate-x-1 transition-transform" />
+        </Link>
+        <div className="bg-white p-6 border rounded-2xl">
+          <div className="flex items-center gap-2 mb-2 text-amber-600">
+            <Star className="w-5 h-5" /> <h3 className="font-bold">Reward points</h3>
           </div>
+          <div className="text-3xl font-black text-amber-500">{profile?.totalRewardPoints ?? 0}</div>
         </div>
-        <div className="bg-white p-6 border rounded-2xl shadow-sm">
-          <div className="flex items-center gap-2 mb-2 text-amber-600"><Star className="w-5 h-5"/> <h3 className="font-bold">Reward Points</h3></div>
-          <p className="text-slate-500 text-sm mb-4">Points you've earned from studies.</p>
-          <div className="text-3xl font-black text-amber-500">{profile?.totalRewardPoints ?? 0} <span className="text-sm font-bold text-slate-400">pts</span></div>
+        <div className="bg-white p-6 border rounded-2xl">
+          <h3 className="font-bold mb-2">Completed studies</h3>
+          <div className="text-3xl font-black">{profile?.completedSessionsCount ?? 0}</div>
         </div>
       </div>
 
-      <div>
-        <h2 className="text-xl font-bold mb-4">In Progress</h2>
-        <div className="bg-white border rounded-xl p-6 text-center text-slate-500">
-          You don't have any incomplete studies.
-        </div>
-      </div>
+      <section>
+        <h2 className="text-xl font-bold mb-3">In progress</h2>
+        {sessions.isLoading ? (
+          <p className="text-slate-500">Loading…</p>
+        ) : unfinished.length === 0 ? (
+          <div className="bg-white border rounded-xl p-6 text-center text-slate-500">You have no unfinished studies.</div>
+        ) : (
+          <ul className="space-y-2">
+            {unfinished.map((s) => (
+              <li key={s.id} className="bg-white border rounded-xl p-4 flex justify-between items-center">
+                <span className="font-medium">{s.experiment.title}</span>
+                <Link href={`/participant/experiments/${s.experimentId}/run`} className="text-sm text-blue-700 font-medium hover:underline">
+                  Continue →
+                </Link>
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
     </div>
   );
 }

@@ -167,12 +167,20 @@ model Experiment {
   status        ExperimentStatus     @default(DRAFT)
   visibility    ExperimentVisibility @default(PRIVATE)
   rewardPoints  Int                  @default(0)
-  attemptPolicy AttemptPolicy        @default(ALLOW_ONE_ATTEMPT)
-  maxAttempts   Int                  @default(1)
+  attemptPolicy AttemptPolicy        @default(ALLOW_MULTIPLE_ATTEMPTS)
+  maxAttempts   Int                  @default(100)
+  /// Working copy edited by the builder (canonical definition JSON). Published versions are immutable snapshots.
+  draftDefinition Json?
+  /// Incremented on every draft save; clients send the revision they edited to detect stale tabs.
+  draftRevision   Int       @default(0)
+  draftUpdatedAt  DateTime?
+  /// Automatic participant-quality thresholds (see quality-rules.ts).
+  qualityRules    Json?
   createdAt     DateTime             @default(now())
   updatedAt     DateTime             @updatedAt
 
   researcher       ResearcherProfile    @relation(fields: [researcherId], references: [id])
+  assets           ExperimentAsset[]
   versions         ExperimentVersion[]
   eligibilityRules EligibilityRule[]
   consents         ParticipantConsent[]
@@ -187,6 +195,28 @@ model Experiment {
   @@index([visibility])
   @@index([createdAt])
   @@map("experiments")
+}
+
+// =============================================================================
+// Uploaded stimulus files (images, audio). Immutable; replaced by uploading anew.
+// =============================================================================
+
+model ExperimentAsset {
+  id           String   @id @default(uuid())
+  experimentId String
+  kind         String   // IMAGE | AUDIO
+  mimeType     String
+  sizeBytes    Int
+  originalName String
+  storageKey   String   @unique
+  sha256       String
+  uploadedBy   String
+  createdAt    DateTime @default(now())
+
+  experiment Experiment @relation(fields: [experimentId], references: [id], onDelete: Cascade)
+
+  @@index([experimentId])
+  @@map("experiment_assets")
 }
 
 // =============================================================================
@@ -223,6 +253,8 @@ model ExperimentVersion {
 model ExperimentTrial {
   id             String  @id @default(uuid())
   versionId      String
+  /// The builder's stable trial id; identical across versions so data can be compared.
+  trialKey       String?
   sequenceOrder  Int
   trialType      String  // e.g., INSTRUCTION, STIMULUS, FIXATION, FEEDBACK, SURVEY
   name           String?
@@ -237,6 +269,7 @@ model ExperimentTrial {
   targetLogicRules LogicRule[]       @relation("TargetTrial")
   responses        TrialResponse[]
 
+  @@index([versionId, trialKey])
   @@index([versionId])
   @@index([sequenceOrder])
   @@map("experiment_trials")
@@ -362,6 +395,7 @@ model ExperimentSession {
   @@index([experimentId])
   @@index([versionId])
   @@index([participantId])
+  @@index([experimentId, participantId])
   @@index([status])
   @@index([startedAt])
   @@map("experiment_sessions")
@@ -463,6 +497,8 @@ model ParticipantRatingEvent {
   source        String   // e.g., SYSTEM, RESEARCHER, ADMIN
   experimentId  String?
   sessionId     String?
+  /// Evidence behind the change (counts, thresholds, flag id) so every change is auditable.
+  metadata      Json?
   createdAt     DateTime @default(now())
 
   participant ParticipantProfile @relation(fields: [participantId], references: [id])

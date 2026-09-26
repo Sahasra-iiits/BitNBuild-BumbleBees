@@ -6,6 +6,7 @@
 
 import crypto from 'crypto';
 import { v4 as uuidv4 } from 'uuid';
+import { stableStringify } from '../../shared/experiment';
 
 let argon2: any = null;
 let bcryptjs: any = null;
@@ -97,8 +98,9 @@ export function generateSecureToken(length = 32): string {
  * Compute SHA-256 hash of a configuration object (for config snapshots).
  */
 export function computeConfigHash(config: unknown): string {
-  const serialized = JSON.stringify(config, Object.keys(config as object).sort());
-  return crypto.createHash('sha256').update(serialized).digest('hex');
+  // A key array passed as JSON.stringify's replacer filters keys at every depth, which
+  // silently dropped all nested trial content from the hash; sort keys recursively instead.
+  return crypto.createHash('sha256').update(stableStringify(config)).digest('hex');
 }
 
 /**

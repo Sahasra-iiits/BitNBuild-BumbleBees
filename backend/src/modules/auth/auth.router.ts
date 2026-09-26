@@ -12,14 +12,15 @@ import { env } from '../../config/env';
 
 export const authRouter = Router();
 
-// Apply stricter rate limiting to all auth endpoints
-authRouter.use(authLimiter);
+// The strict limiter guards credential endpoints only. /refresh and /me run on every
+// page load, and limiting them to 20 per 15 minutes logged active users out.
 
 /**
  * POST /auth/register
  */
 authRouter.post(
   '/register',
+  authLimiter,
   validate({ body: registerSchema }),
   async (req: Request, res: Response, next: NextFunction) => {
     try {
@@ -55,6 +56,7 @@ authRouter.post(
  */
 authRouter.post(
   '/login',
+  authLimiter,
   validate({ body: loginSchema }),
   async (req: Request, res: Response, next: NextFunction) => {
     try {
@@ -138,35 +140,15 @@ authRouter.get(
   }
 );
 
-/**
- * POST /auth/forgot-password
- */
-authRouter.post(
-  '/forgot-password',
-  async (_req: Request, res: Response) => {
-    // TODO: Implement email reset flow
-    res.json({ message: 'If the email exists, a password reset link has been sent.' });
-  }
-);
+// Password reset and email verification need an email delivery service, which this
+// deployment does not have. These endpoints previously reported success without doing
+// anything; they now say so explicitly.
+function notImplemented(feature: string) {
+  return (_req: Request, res: Response) => {
+    res.status(501).json({ error: { code: 'NOT_IMPLEMENTED', message: `${feature} is not available on this server.` } });
+  };
+}
 
-/**
- * POST /auth/reset-password
- */
-authRouter.post(
-  '/reset-password',
-  async (_req: Request, res: Response) => {
-    // TODO: Implement password reset with token validation
-    res.json({ message: 'Password has been successfully reset.' });
-  }
-);
-
-/**
- * POST /auth/verify-email
- */
-authRouter.post(
-  '/verify-email',
-  async (_req: Request, res: Response) => {
-    // TODO: Implement email verification
-    res.json({ message: 'Email has been successfully verified.' });
-  }
-);
+authRouter.post('/forgot-password', authLimiter, notImplemented('Password reset'));
+authRouter.post('/reset-password', authLimiter, notImplemented('Password reset'));
+authRouter.post('/verify-email', authLimiter, notImplemented('Email verification'));
