@@ -20,7 +20,8 @@ interface Sample {
   rt: number | null;
   correct: boolean | null;
   timeout: boolean;
-  sessionId: string;
+  /** Internal participant profile id; only used for counting distinct people. */
+  participantId: string;
 }
 
 function round2(n: number | null): number | null {
@@ -37,7 +38,7 @@ export function summarize(samples: Sample[]) {
   const sd = rts.length > 1 && mean !== null ? Math.sqrt(rts.reduce((s, rt) => s + (rt - mean) ** 2, 0) / (rts.length - 1)) : null;
   return {
     n: samples.length,
-    participants: new Set(samples.map((s) => s.sessionId)).size,
+    participants: new Set(samples.map((s) => s.participantId)).size,
     rtCount: rts.length,
     meanRt: round2(mean),
     medianRt: round2(median),
@@ -69,12 +70,12 @@ export class ResultsService {
     const responses = await prisma.trialResponse.findMany({
       where: { excluded: false, session: { experimentId, status: 'COMPLETED', ...versionFilter } },
       select: {
-        sessionId: true,
         condition: true,
         reactionTimeMs: true,
         correct: true,
         timeout: true,
         response: true,
+        session: { select: { participantId: true } },
         trial: { select: { id: true, trialKey: true, name: true } },
       },
     });
@@ -88,7 +89,7 @@ export class ResultsService {
     const byCondition = new Map<string, Sample[]>();
     const byTrial = new Map<string, { name: string; condition: string; samples: Sample[] }>();
     for (const r of responseTrials) {
-      const sample: Sample = { rt: r.reactionTimeMs, correct: r.correct, timeout: r.timeout, sessionId: r.sessionId };
+      const sample: Sample = { rt: r.reactionTimeMs, correct: r.correct, timeout: r.timeout, participantId: r.session.participantId };
       const condition = r.condition || 'Unlabeled';
       if (!byCondition.has(condition)) byCondition.set(condition, []);
       byCondition.get(condition)!.push(sample);

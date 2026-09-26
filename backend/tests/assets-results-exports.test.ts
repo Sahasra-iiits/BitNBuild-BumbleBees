@@ -3,6 +3,7 @@ import ExcelJS from 'exceljs';
 import { app } from '../src/app';
 import { prisma } from '../src/config/database';
 import { csvCell } from '../src/modules/exports/export-rows';
+import { summarize } from '../src/modules/results/results.service';
 import { detectMediaType } from '../src/modules/assets/file-type';
 import {
   API,
@@ -232,6 +233,16 @@ describe('Results and exports', () => {
     const other = await createResearcher();
     expect((await request(app).get(`${API}/exports/${job.body.id}/download`).set('Authorization', `Bearer ${other.token}`)).status).toBe(404);
     expect((await request(app).post(`${API}/exports`).set('Authorization', `Bearer ${other.token}`).send({ experimentId, format: 'CSV' })).status).toBe(403);
+  });
+
+  it('counts distinct participants, not sessions, and excludes timeouts from RT', () => {
+    const s = summarize([
+      { rt: 400, correct: true, timeout: false, participantId: 'p1' },
+      { rt: 600, correct: false, timeout: false, participantId: 'p1' },
+      { rt: null, correct: false, timeout: true, participantId: 'p2' },
+    ]);
+    expect(s).toMatchObject({ n: 3, participants: 2, rtCount: 2, meanRt: 500, scoredCount: 3, timeouts: 1 });
+    expect(s.accuracy).toBeCloseTo(33.33, 2);
   });
 
   it('escapes CSV cells and neutralizes spreadsheet formulas', () => {
