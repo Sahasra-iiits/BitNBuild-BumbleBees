@@ -1,0 +1,579 @@
+// ==============================================================================
+// SynapseLab — Prisma Schema (PostgreSQL)
+// ==============================================================================
+// Complete normalized schema for cognitive science experiment platform.
+// All public identifiers use UUIDs. No sequential IDs are exposed.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// =============================================================================
+// Enums
+// =============================================================================
+
+enum Role {
+  RESEARCHER
+  PARTICIPANT
+  ADMIN
+}
+
+enum ExperimentStatus {
+  DRAFT
+  PUBLISHED
+  PAUSED
+  CLOSED
+  ARCHIVED
+}
+
+enum ExperimentVisibility {
+  PUBLIC
+  PRIVATE
+}
+
+enum AttemptPolicy {
+  ALLOW_ONE_ATTEMPT
+  ALLOW_MULTIPLE_ATTEMPTS
+}
+
+enum SessionStatus {
+  STARTED
+  IN_PROGRESS
+  COMPLETED
+  ABANDONED
+  EXCLUDED
+}
+
+enum QualityFlagStatus {
+  OPEN
+  REVIEWED
+  DISMISSED
+  CONFIRMED
+}
+
+enum ExportFormat {
+  CSV
+  XLSX
+  JSON
+}
+
+enum ExportStatus {
+  QUEUED
+  PROCESSING
+  READY
+  FAILED
+  EXPIRED
+}
+
+// =============================================================================
+// Core Identity Models
+// =============================================================================
+
+model User {
+  id              String   @id @default(uuid())
+  email           String   @unique
+  passwordHash    String
+  role            Role
+  isEmailVerified Boolean  @default(false)
+  isActive        Boolean  @default(true)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  researcherProfile  ResearcherProfile?
+  participantProfile ParticipantProfile?
+  sessions           UserSession[]
+  auditEvents        AuditEvent[]
+
+  @@index([email])
+  @@index([role])
+  @@map("users")
+}
+
+model ResearcherProfile {
+  id          String  @id @default(uuid())
+  userId      String  @unique
+  institution String
+  department  String?
+  bio         String?
+
+  user         User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  experiments  Experiment[]
+  qualityFlags QualityFlag[]
+  exportJobs   ExportJob[]
+
+  @@map("researcher_profiles")
+}
+
+model ParticipantProfile {
+  id                     String @id @default(uuid())
+  userId                 String @unique
+  pseudonymousId         String @unique
+  age                    Int
+  gender                 String?
+  educationLevel         String?
+  qualityRating          Float  @default(100.0)
+  totalRewardPoints      Int    @default(0)
+  completedSessionsCount Int    @default(0)
+
+  user         User                     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  consents     ParticipantConsent[]
+  sessions     ExperimentSession[]
+  ratingEvents ParticipantRatingEvent[]
+  rewards      ExperimentReward[]
+  qualityFlags QualityFlag[]
+
+  @@index([pseudonymousId])
+  @@index([qualityRating])
+  @@index([age])
+  @@map("participant_profiles")
+}
+
+// =============================================================================
+// Authentication Sessions
+// =============================================================================
+
+model UserSession {
+  id               String   @id @default(uuid())
+  userId           String
+  refreshTokenHash String
+  userAgent        String?
+  ipAddress        String?
+  isRevoked        Boolean  @default(false)
+  expiresAt        DateTime
+  createdAt        DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([refreshTokenHash])
+  @@map("user_sessions")
+}
+
+// =============================================================================
+// Experiment Core
+// =============================================================================
+
+model Experiment {
+  id            String               @id @default(uuid())
+  researcherId  String
+  title         String
+  description   String?
+  instructions  String?
+  status        ExperimentStatus     @default(DRAFT)
+  visibility    ExperimentVisibility @default(PRIVATE)
+  rewardPoints  Int                  @default(0)
+  attemptPolicy AttemptPolicy        @default(ALLOW_ONE_ATTEMPT)
+  maxAttempts   Int                  @default(1)
+  createdAt     DateTime             @default(now())
+  updatedAt     DateTime             @updatedAt
+
+  researcher       ResearcherProfile    @relation(fields: [researcherId], references: [id])
+  versions         ExperimentVersion[]
+  eligibilityRules EligibilityRule[]
+  consents         ParticipantConsent[]
+  sessions         ExperimentSession[]
+  qualityFlags     QualityFlag[]
+  rewards          ExperimentReward[]
+  results          ExperimentResult[]
+  exportJobs       ExportJob[]
+
+  @@index([researcherId])
+  @@index([status])
+  @@index([visibility])
+  @@index([createdAt])
+  @@map("experiments")
+}
+
+// =============================================================================
+// Experiment Versioning (Immutable after publish)
+// =============================================================================
+
+model ExperimentVersion {
+  id             String    @id @default(uuid())
+  experimentId   String
+  versionNumber  Int
+  configSnapshot Json
+  configHash     String
+  publishedAt    DateTime?
+  createdBy      String
+  createdAt      DateTime  @default(now())
+
+  experiment    Experiment            @relation(fields: [experimentId], references: [id], onDelete: Cascade)
+  trials        ExperimentTrial[]
+  logicRules    LogicRule[]
+  randomization RandomizationConfig[]
+  consents      ParticipantConsent[]
+  sessions      ExperimentSession[]
+  results       ExperimentResult[]
+
+  @@unique([experimentId, versionNumber])
+  @@index([experimentId])
+  @@map("experiment_versions")
+}
+
+// =============================================================================
+// Trials, Elements, Logic, Randomization
+// =============================================================================
+
+model ExperimentTrial {
+  id             String  @id @default(uuid())
+  versionId      String
+  sequenceOrder  Int
+  trialType      String  // e.g., INSTRUCTION, STIMULUS, FIXATION, FEEDBACK, SURVEY
+  name           String?
+  configuration  Json
+  stimulusConfig Json?
+  durationMs     Int?
+  timeoutMs      Int?
+
+  version          ExperimentVersion @relation(fields: [versionId], references: [id], onDelete: Cascade)
+  elements         TrialElement[]
+  sourceLogicRules LogicRule[]       @relation("SourceTrial")
+  targetLogicRules LogicRule[]       @relation("TargetTrial")
+  responses        TrialResponse[]
+
+  @@index([versionId])
+  @@index([sequenceOrder])
+  @@map("experiment_trials")
+}
+
+model TrialElement {
+  id            String @id @default(uuid())
+  trialId       String
+  elementType   String // e.g., TEXT, IMAGE, AUDIO, VIDEO, INPUT, BUTTON, SLIDER, LIKERT
+  configuration Json
+  sequenceOrder Int
+
+  trial ExperimentTrial @relation(fields: [trialId], references: [id], onDelete: Cascade)
+
+  @@index([trialId])
+  @@map("trial_elements")
+}
+
+model LogicRule {
+  id            String  @id @default(uuid())
+  versionId     String
+  sourceTrialId String?
+  targetTrialId String?
+  conditionType String  // e.g., RESPONSE_EQUALS, RESPONSE_GT, RANDOM, ALWAYS, SCORE_THRESHOLD
+  condition     Json
+  priority      Int     @default(0)
+
+  version     ExperimentVersion @relation(fields: [versionId], references: [id], onDelete: Cascade)
+  sourceTrial ExperimentTrial?  @relation("SourceTrial", fields: [sourceTrialId], references: [id])
+  targetTrial ExperimentTrial?  @relation("TargetTrial", fields: [targetTrialId], references: [id])
+
+  @@index([versionId])
+  @@map("logic_rules")
+}
+
+model RandomizationConfig {
+  id            String @id @default(uuid())
+  versionId     String
+  strategy      String // e.g., FULL_RANDOM, LATIN_SQUARE, BLOCK, COUNTERBALANCE, FIXED
+  seed          String?
+  configuration Json
+
+  version ExperimentVersion @relation(fields: [versionId], references: [id], onDelete: Cascade)
+
+  @@index([versionId])
+  @@map("randomization_configs")
+}
+
+// =============================================================================
+// Eligibility
+// =============================================================================
+
+model EligibilityRule {
+  id                String    @id @default(uuid())
+  experimentId      String
+  ruleType          String    // e.g., AGE_RANGE, RATING_RANGE, ATTEMPT_LIMIT, AVAILABILITY_WINDOW, CUSTOM
+  minAge            Int?
+  maxAge            Int?
+  minRating         Float?
+  maxRating         Float?
+  maxAttempts       Int?
+  availabilityStart DateTime?
+  availabilityEnd   DateTime?
+  configuration     Json?
+
+  experiment Experiment @relation(fields: [experimentId], references: [id], onDelete: Cascade)
+
+  @@index([experimentId])
+  @@map("eligibility_rules")
+}
+
+// =============================================================================
+// Consent
+// =============================================================================
+
+model ParticipantConsent {
+  id              String    @id @default(uuid())
+  participantId   String
+  experimentId    String
+  versionId       String
+  consentVersion  String
+  consentTextHash String
+  agreedAt        DateTime  @default(now())
+  withdrawnAt     DateTime?
+
+  participant ParticipantProfile @relation(fields: [participantId], references: [id])
+  experiment  Experiment         @relation(fields: [experimentId], references: [id])
+  version     ExperimentVersion  @relation(fields: [versionId], references: [id])
+  sessions    ExperimentSession[]
+
+  @@index([participantId])
+  @@index([experimentId])
+  @@map("participant_consents")
+}
+
+// =============================================================================
+// Experiment Sessions
+// =============================================================================
+
+model ExperimentSession {
+  id              String        @id @default(uuid())
+  experimentId    String
+  versionId       String
+  participantId   String
+  pseudonymousRef String
+  consentId       String?
+  status          SessionStatus @default(STARTED)
+  startedAt       DateTime      @default(now())
+  completedAt     DateTime?
+  clientMetadata  Json?
+  qualityStatus   String?       // e.g., CLEAN, FLAGGED, EXCLUDED
+  idempotencyKey  String?       @unique
+
+  experiment     Experiment          @relation(fields: [experimentId], references: [id])
+  version        ExperimentVersion   @relation(fields: [versionId], references: [id])
+  participant    ParticipantProfile  @relation(fields: [participantId], references: [id])
+  consent        ParticipantConsent? @relation(fields: [consentId], references: [id])
+  responses      TrialResponse[]
+  qualitySignals QualitySignal[]
+  qualityFlags   QualityFlag[]
+  rewards        ExperimentReward[]
+
+  @@index([experimentId])
+  @@index([versionId])
+  @@index([participantId])
+  @@index([status])
+  @@index([startedAt])
+  @@map("experiment_sessions")
+}
+
+// =============================================================================
+// Trial Responses (Immutable raw research data)
+// =============================================================================
+
+model TrialResponse {
+  id                      String    @id @default(uuid())
+  sessionId               String
+  trialId                 String
+  eventId                 String    @unique // Client-generated idempotency key
+  trialSequence           Int
+  condition               String?
+  stimulusId              String?
+  stimulusDisplayTimestamp BigInt?   // High-precision client timestamp (ms since epoch)
+  responseTimestamp        BigInt?   // High-precision client timestamp
+  reactionTimeMs          Float?    // Client-computed reaction time
+  response                Json?     // Raw response data
+  correct                 Boolean?
+  timeout                 Boolean   @default(false)
+  clientEventSequence     Int?
+  excluded                Boolean   @default(false)
+  exclusionReason         String?
+  excludedAt              DateTime?
+  excludedBy              String?
+  createdAt               DateTime  @default(now())
+
+  session ExperimentSession @relation(fields: [sessionId], references: [id])
+  trial   ExperimentTrial   @relation(fields: [trialId], references: [id])
+
+  @@index([sessionId])
+  @@index([trialId])
+  @@index([eventId])
+  @@index([condition])
+  @@index([excluded])
+  @@map("trial_responses")
+}
+
+// =============================================================================
+// Quality System
+// =============================================================================
+
+model QualitySignal {
+  id         String   @id @default(uuid())
+  sessionId  String
+  signalType String   // e.g., EXTREMELY_FAST_RESPONSE, REPEATED_IDENTICAL, FAILED_ATTENTION_CHECK
+  severity   String   // e.g., LOW, MEDIUM, HIGH, CRITICAL
+  metadata   Json?
+  detectedAt DateTime @default(now())
+
+  session ExperimentSession @relation(fields: [sessionId], references: [id])
+
+  @@index([sessionId])
+  @@index([signalType])
+  @@map("quality_signals")
+}
+
+model QualityFlag {
+  id             String            @id @default(uuid())
+  participantId  String
+  experimentId   String
+  sessionId      String?
+  researcherId   String
+  reason         String
+  description    String?
+  affectedTrials Json?
+  evidence       Json?
+  status         QualityFlagStatus @default(OPEN)
+  createdAt      DateTime          @default(now())
+  reviewedAt     DateTime?
+  reviewedBy     String?
+
+  participant ParticipantProfile @relation(fields: [participantId], references: [id])
+  experiment  Experiment         @relation(fields: [experimentId], references: [id])
+  session     ExperimentSession? @relation(fields: [sessionId], references: [id])
+  researcher  ResearcherProfile  @relation(fields: [researcherId], references: [id])
+
+  @@index([participantId])
+  @@index([experimentId])
+  @@index([researcherId])
+  @@index([status])
+  @@map("quality_flags")
+}
+
+// =============================================================================
+// Participant Rating (Immutable event history)
+// =============================================================================
+
+model ParticipantRatingEvent {
+  id            String   @id @default(uuid())
+  participantId String
+  oldRating     Float
+  delta         Float
+  newRating     Float
+  reason        String   // e.g., EXPERIMENT_COMPLETION, FAILED_ATTENTION_CHECK, RESEARCHER_QUALITY_FLAG
+  source        String   // e.g., SYSTEM, RESEARCHER, ADMIN
+  experimentId  String?
+  sessionId     String?
+  createdAt     DateTime @default(now())
+
+  participant ParticipantProfile @relation(fields: [participantId], references: [id])
+
+  @@index([participantId])
+  @@index([createdAt])
+  @@map("participant_rating_events")
+}
+
+// =============================================================================
+// Rewards
+// =============================================================================
+
+model ExperimentReward {
+  id             String    @id @default(uuid())
+  participantId  String
+  experimentId   String
+  sessionId      String?
+  points         Int
+  reason         String
+  createdAt      DateTime  @default(now())
+  revokedAt      DateTime?
+  idempotencyKey String?   @unique
+
+  participant ParticipantProfile @relation(fields: [participantId], references: [id])
+  experiment  Experiment         @relation(fields: [experimentId], references: [id])
+  session     ExperimentSession? @relation(fields: [sessionId], references: [id])
+
+  @@index([participantId])
+  @@index([experimentId])
+  @@map("experiment_rewards")
+}
+
+// =============================================================================
+// Results (Computed aggregates)
+// =============================================================================
+
+model ExperimentResult {
+  id           String   @id @default(uuid())
+  experimentId String
+  versionId    String?
+  condition    String
+  n            Int
+  meanRt       Float?
+  medianRt     Float?
+  stdRt        Float?
+  accuracy     Float?
+  errorRate    Float?
+  metadata     Json?
+  computedAt   DateTime @default(now())
+
+  experiment Experiment        @relation(fields: [experimentId], references: [id])
+  version    ExperimentVersion? @relation(fields: [versionId], references: [id])
+
+  @@index([experimentId])
+  @@index([condition])
+  @@map("experiment_results")
+}
+
+// =============================================================================
+// Data Export
+// =============================================================================
+
+model ExportJob {
+  id             String       @id @default(uuid())
+  researcherId   String
+  experimentId   String
+  format         ExportFormat
+  status         ExportStatus @default(QUEUED)
+  filePath       String?
+  fileName       String?
+  filters        Json?
+  errorMessage   String?
+  createdAt      DateTime     @default(now())
+  completedAt    DateTime?
+  expiresAt      DateTime?
+  idempotencyKey String?      @unique
+
+  researcher ResearcherProfile @relation(fields: [researcherId], references: [id])
+  experiment Experiment        @relation(fields: [experimentId], references: [id])
+
+  @@index([researcherId])
+  @@index([experimentId])
+  @@index([status])
+  @@map("export_jobs")
+}
+
+// =============================================================================
+// Audit Log (Append-only)
+// =============================================================================
+
+model AuditEvent {
+  id            String   @id @default(uuid())
+  actorId       String?
+  actorRole     String?
+  action        String
+  resourceType  String
+  resourceId    String?
+  metadata      Json?
+  ipAddress     String?  // Redacted/hashed in production
+  userAgent     String?
+  correlationId String?
+  createdAt     DateTime @default(now())
+
+  actor User? @relation(fields: [actorId], references: [id])
+
+  @@index([actorId])
+  @@index([action])
+  @@index([resourceType])
+  @@index([resourceId])
+  @@index([createdAt])
+  @@index([correlationId])
+  @@map("audit_events")
+}

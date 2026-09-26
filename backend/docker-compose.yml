@@ -1,0 +1,92 @@
+# ==============================================================================
+# SynapseLab Backend — Local Development Docker Compose
+# ==============================================================================
+
+version: '3.9'
+
+services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:16-alpine
+    container_name: synapselab-postgres
+    environment:
+      POSTGRES_DB: synapselab_dev
+      POSTGRES_USER: synapselab
+      POSTGRES_PASSWORD: synapselab_dev
+    ports:
+      - '5432:5432'
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U synapselab -d synapselab_dev']
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # Redis Cache & Queue
+  redis:
+    image: redis:7-alpine
+    container_name: synapselab-redis
+    ports:
+      - '6379:6379'
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # MinIO (S3-compatible object storage)
+  minio:
+    image: minio/minio:latest
+    container_name: synapselab-minio
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports:
+      - '9000:9000'
+      - '9001:9001'
+    volumes:
+      - minio_data:/data
+    command: server /data --console-address ":9001"
+    healthcheck:
+      test: ['CMD', 'mc', 'ready', 'local']
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # SynapseLab API (production mode)
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: synapselab-api
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      PORT: 4000
+      DATABASE_URL: postgresql://synapselab:synapselab_dev@postgres:5432/synapselab_dev
+      REDIS_URL: redis://redis:6379
+      JWT_ACCESS_SECRET: docker-dev-access-secret-change-in-prod
+      JWT_REFRESH_SECRET: docker-dev-refresh-secret-change-in-prod
+      CSRF_SECRET: docker-dev-csrf-secret-change-in-prod
+      CORS_ORIGINS: http://localhost:3000,http://localhost:3001
+      S3_ENDPOINT: http://minio:9000
+      S3_ACCESS_KEY: minioadmin
+      S3_SECRET_KEY: minioadmin
+      S3_BUCKET_NAME: synapselab-assets
+      S3_REGION: us-east-1
+      S3_FORCE_PATH_STYLE: 'true'
+      LOG_LEVEL: info
+    ports:
+      - '4000:4000'
+
+volumes:
+  postgres_data:
+  redis_data:
+  minio_data:
