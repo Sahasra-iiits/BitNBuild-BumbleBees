@@ -141,14 +141,32 @@ authRouter.get(
 /**
  * POST /auth/forgot-password
  */
-authRouter.post( /forgot-password, validate({ body: z.object({ email: z.string().email() }) }), async (req: Request, res: Response) = res.json({ message: If the email exists a password reset link has been sent. }); });
+authRouter.post(
+  '/forgot-password',
+  async (_req: Request, res: Response) => {
+    // TODO: Implement email reset flow
+    res.json({ message: 'If the email exists, a password reset link has been sent.' });
+  }
+);
 
 /**
  * POST /auth/reset-password
  */
-authRouter.post(/reset-password, validate({ body: z.object({ token: z.string(), newPassword: z.string().min(8) }) }), async (req: Request, res: Response) = res.json({ message: Password has been successfully reset. }); });
+authRouter.post(
+  '/reset-password',
+  async (_req: Request, res: Response) => {
+    // TODO: Implement password reset with token validation
+    res.json({ message: 'Password has been successfully reset.' });
+  }
+);
 
 /**
  * POST /auth/verify-email
  */
-authRouter.post(/verify-email, validate({ body: z.object({ token: z.string() }) }), async (req: Request, res: Response) = res.json({ message: Email has been successfully verified. }); });
+authRouter.post(
+  '/verify-email',
+  async (_req: Request, res: Response) => {
+    // TODO: Implement email verification
+    res.json({ message: 'Email has been successfully verified.' });
+  }
+);

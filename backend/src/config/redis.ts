@@ -11,7 +11,7 @@ let redis: Redis | null = null;
 export function getRedis(): Redis {
   if (!redis) {
     redis = new Redis(env.REDIS_URL, {
-      maxRetriesPerRequest: 3,
+      maxRetriesPerRequest: null,
       retryStrategy(times) {
         const delay = Math.min(times * 200, 5000);
         return delay;

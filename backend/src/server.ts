@@ -71,6 +71,7 @@ async function bootstrap(): Promise<void> {
 }
 
 bootstrap().catch((error) => {
+  console.error('Failed to start server:', error);
   logger.fatal({ error }, 'Failed to start server');
   process.exit(1);
 });
