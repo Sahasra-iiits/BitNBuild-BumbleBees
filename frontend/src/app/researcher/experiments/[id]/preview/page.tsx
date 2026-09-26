@@ -149,15 +149,15 @@ export default function PreviewPage() {
     if (scoring && scoring.enabled) {
       isCorrect = (scoring.correctAnswer === value);
     }
-    
     setLocalResponses(prev => ({ ...prev, [elementId]: value }));
 
-    // In a real system, we might accumulate multiple responses if advanceMode requires it.
-    // For now, if the trial advanceMode expects a response, we advance immediately upon receiving one.
-    if (trial.advanceMode === 'response' || trial.advanceMode === 'response_or_timeout') {
+    // Always auto-advance when a response is received, for a smoother flow.
+    // If they have multiple response elements, this naive approach advances on the first one, 
+    // but usually trials only have one primary response element.
+    if (trial.advanceMode !== 'timed') {
       advanceTrial('participant_response', { elementId, response: value, isCorrect });
     } else {
-      // Just record it silently without advancing
+      // Just record it silently without advancing (timed mode waits for timer)
       setResults(prev => {
         const last = prev[prev.length - 1];
         if (last && last.trialId === trial.id) {
@@ -316,6 +316,30 @@ export default function PreviewPage() {
                   />
                 </div>
               );
+            case 'TEXT_INPUT':
+              return (
+                <div key={el.id} className="w-full max-w-md mb-8 relative z-10">
+                  {el.config.multiline ? (
+                    <textarea 
+                      placeholder={el.config.placeholder || ''}
+                      value={localResponses[el.id] || ''}
+                      onChange={(e) => setLocalResponses(prev => ({ ...prev, [el.id]: e.target.value }))}
+                      onBlur={(e) => handleElementResponse(el.id, e.target.value, el.scoring)}
+                      className="w-full p-4 border-2 border-slate-300 rounded-xl text-lg focus:border-blue-500 focus:ring-4 focus:ring-blue-500/20 outline-none transition-all min-h-[120px] resize-y shadow-sm bg-white"
+                    />
+                  ) : (
+                    <input 
+                      type="text"
+                      placeholder={el.config.placeholder || ''}
+                      value={localResponses[el.id] || ''}
+                      onChange={(e) => setLocalResponses(prev => ({ ...prev, [el.id]: e.target.value }))}
+                      onBlur={(e) => handleElementResponse(el.id, e.target.value, el.scoring)}
+                      onKeyDown={(e) => e.key === 'Enter' && handleElementResponse(el.id, e.currentTarget.value, el.scoring)}
+                      className="w-full p-4 border-2 border-slate-300 rounded-xl text-lg focus:border-blue-500 focus:ring-4 focus:ring-blue-500/20 outline-none transition-all shadow-sm bg-white"
+                    />
+                  )}
+                </div>
+              );
             case 'MOUSE_CLICK':
               return (
                 <div 
@@ -352,8 +376,9 @@ export default function PreviewPage() {
         })}
       </div>
       
-      {trial.advanceMode === 'manual' && (
-        <div className={`absolute bottom-8 left-0 right-0 flex justify-center z-10 transition-all duration-500 ${Object.keys(localResponses).length > 0 || trial.elements.filter(e => e.role === 'RESPONSE').length === 0 ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-4 pointer-events-none'}`}>
+      {/* Only show Continue button if there are NO response elements (e.g. pure instruction screens) */}
+      {trial.advanceMode === 'manual' && trial.elements.filter(e => e.role === 'RESPONSE').length === 0 && (
+        <div className="absolute bottom-8 left-0 right-0 flex justify-center z-10 animate-fade-in">
           <button 
             onClick={() => advanceTrial('manual_continue')}
             className="px-8 py-3 bg-slate-900 text-white rounded-full font-medium hover:bg-slate-800 shadow-lg hover:shadow-xl transition-all flex items-center gap-2"

@@ -15,28 +15,7 @@ const experimentIdParam = z.object({ id: z.string().uuid() });
 const versionParams = z.object({ id: z.string().uuid(), versionId: z.string().uuid() });
 
 const createVersionSchema = z.object({
-  trials: z
-    .array(
-      z.object({
-        sequenceOrder: z.number().int().min(0),
-        trialType: z.string().min(1),
-        name: z.string().optional(),
-        configuration: z.record(z.unknown()),
-        stimulusConfig: z.record(z.unknown()).optional(),
-        durationMs: z.number().int().positive().optional(),
-        timeoutMs: z.number().int().positive().optional(),
-        elements: z
-          .array(
-            z.object({
-              elementType: z.string().min(1),
-              configuration: z.record(z.unknown()),
-              sequenceOrder: z.number().int().min(0),
-            })
-          )
-          .optional(),
-      })
-    )
-    .optional(),
+  trials: z.array(z.record(z.unknown())).optional(),
   logicRules: z
     .array(
       z.object({

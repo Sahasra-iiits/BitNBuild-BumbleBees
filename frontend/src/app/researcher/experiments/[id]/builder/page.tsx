@@ -301,6 +301,40 @@ function SliderRatingConfig({ element, update }: { element: any, update: (e: any
   );
 }
 
+function TextInputConfig({ element, update }: { element: any, update: (e: any) => void }) {
+  return (
+    <div className="mt-4 space-y-4">
+      <div>
+        <label className="block text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-2">Placeholder Text (Optional)</label>
+        <input 
+          type="text" 
+          value={element.config.placeholder || ''} 
+          onChange={(e) => update({ ...element, config: { ...element.config, placeholder: e.target.value } })} 
+          className="w-full border rounded p-1.5 text-sm outline-none focus:border-blue-500" 
+          placeholder="e.g. Type your answer here..."
+        />
+      </div>
+      <div>
+        <label className="flex items-center gap-2 text-sm text-slate-600 cursor-pointer">
+          <input 
+            type="checkbox" 
+            checked={element.config.multiline || false} 
+            onChange={(e) => update({ ...element, config: { ...element.config, multiline: e.target.checked } })}
+            className="rounded border-slate-300 text-blue-600 focus:ring-blue-500 w-4 h-4 cursor-pointer"
+          />
+          Multi-line response (Paragraph)
+        </label>
+      </div>
+      
+      <ScoringConfigPanel 
+        scoring={element.scoring} 
+        updateScoring={(scoring) => update({ ...element, scoring })}
+        possibleAnswers={[]}
+      />
+    </div>
+  );
+}
+
 // --- MAIN BUILDER ---
 
 export default function BuilderPage() {
@@ -419,6 +453,11 @@ export default function BuilderPage() {
         config: { min: 1, max: 7, step: 1, defaultValue: 4 }, 
         scoring: getDefaultScoring() 
       } as any;
+      case 'TEXT_INPUT': return {
+        id, type, role: 'RESPONSE',
+        config: { placeholder: '', multiline: false },
+        scoring: getDefaultScoring()
+      } as any;
       default: throw new Error(`Unknown type ${type}`);
     }
   };
@@ -471,6 +510,7 @@ export default function BuilderPage() {
       case 'MOUSE_CLICK': return <MousePointer2 className="w-4 h-4 text-emerald-500" />;
       case 'MULTIPLE_CHOICE': return <List className="w-4 h-4 text-emerald-500" />;
       case 'SLIDER_RATING': return <SlidersHorizontal className="w-4 h-4 text-emerald-500" />;
+      case 'TEXT_INPUT': return <Type className="w-4 h-4 text-emerald-500" />;
       default: return <GripVertical className="w-4 h-4" />;
     }
   };
@@ -557,6 +597,7 @@ export default function BuilderPage() {
                             {el.type === 'KEYBOARD_PRESS' && <KeyboardConfig element={el} update={(updated) => updateElement(trial.id, el.id, updated)} />}
                             {el.type === 'MULTIPLE_CHOICE' && <MultipleChoiceConfig element={el} update={(updated) => updateElement(trial.id, el.id, updated)} />}
                             {el.type === 'SLIDER_RATING' && <SliderRatingConfig element={el} update={(updated) => updateElement(trial.id, el.id, updated)} />}
+                            {el.type === 'TEXT_INPUT' && <TextInputConfig element={el} update={(updated) => updateElement(trial.id, el.id, updated)} />}
                             {el.type === 'MOUSE_CLICK' && <div className="text-sm text-slate-500 italic mt-2">Records timestamp and coordinates on click.</div>}
                           </div>
                         ))}
@@ -579,7 +620,7 @@ export default function BuilderPage() {
                     <div>
                       <h4 className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-2">Add Response</h4>
                       <div className="flex flex-wrap gap-2">
-                        {['KEYBOARD_PRESS', 'MOUSE_CLICK', 'MULTIPLE_CHOICE', 'SLIDER_RATING'].map(type => (
+                        {['KEYBOARD_PRESS', 'MOUSE_CLICK', 'MULTIPLE_CHOICE', 'SLIDER_RATING', 'TEXT_INPUT'].map(type => (
                           <button key={type} onClick={() => addElementToTrial(trial.id, type)} className="px-2.5 py-1.5 border border-slate-200 rounded text-xs hover:bg-slate-50 hover:border-emerald-300 text-slate-600 flex items-center gap-1.5 transition-colors bg-white">
                             {getElementIcon(type)} {getElementLabel(type)}
                           </button>

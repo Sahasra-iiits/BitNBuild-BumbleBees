@@ -40,7 +40,7 @@ apiRouter.use('/experiments', experimentsRouter);
 apiRouter.use('/experiments', versionsRouter);
 apiRouter.use('/consent', consentRouter);
 // Sessions: handles both /sessions/:id/... AND /experiments/:id/sessions via the router
-apiRouter.use('/sessions', sessionsRouter);
+apiRouter.use('/', sessionsRouter);
 apiRouter.use('/quality', qualityRouter);
 apiRouter.use('/results', resultsRouter);
 apiRouter.use('/exports', exportsRouter);

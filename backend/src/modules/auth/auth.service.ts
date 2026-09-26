@@ -50,7 +50,7 @@ export class AuthService {
                   age: input.participantProfile.age,
                   gender: input.participantProfile.gender || null,
                   educationLevel: input.participantProfile.educationLevel || null,
-                  qualityRating: 100.0,
+                  qualityRating: 1200.0,
                   totalRewardPoints: 0,
                 },
               }

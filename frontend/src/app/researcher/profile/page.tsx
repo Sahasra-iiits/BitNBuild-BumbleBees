@@ -1,11 +1,57 @@
-import Link from 'next/link';
+"use client";
+import { useAuth } from '@/lib/context/AuthContext';
+import { Mail, Building2, User } from 'lucide-react';
 
 export default function ResearcherProfilePage() {
+  const { user, isLoading } = useAuth();
+
+  if (isLoading) return <div className="p-12 text-center text-slate-500">Loading...</div>;
+
+  const profile = user?.researcherProfile;
+
   return (
-    <div className="p-8 max-w-4xl mx-auto">
-      <h1 className="text-3xl font-bold mb-4">Researcher Profile</h1>
-      <p className="text-slate-600 mb-8">This page is currently under construction.</p>
-      <Link href="/" className="text-blue-600 hover:underline">&larr; Back to Home</Link>
+    <div className="max-w-3xl mx-auto space-y-8 p-6">
+      <h1 className="text-3xl font-bold tracking-tight mb-6">Researcher Profile</h1>
+      
+      <div className="bg-white border rounded-2xl shadow-sm overflow-hidden">
+        <div className="p-6 border-b bg-slate-50 flex items-center gap-4">
+          <div className="w-16 h-16 bg-blue-100 text-blue-600 rounded-full flex items-center justify-center text-2xl font-bold">
+            {user?.email.charAt(0).toUpperCase()}
+          </div>
+          <div>
+            <h2 className="text-xl font-bold text-slate-900">Lab Profile</h2>
+            <div className="text-sm text-slate-500 font-mono mt-1">ID: {profile?.id || user?.id}</div>
+          </div>
+        </div>
+        
+        <div className="p-6 space-y-6">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <div className="flex items-start gap-3">
+              <Mail className="w-5 h-5 text-slate-400 mt-0.5" />
+              <div>
+                <div className="text-sm font-semibold text-slate-700">Email Address</div>
+                <div className="text-slate-600">{user?.email}</div>
+              </div>
+            </div>
+            
+            <div className="flex items-start gap-3">
+              <Building2 className="w-5 h-5 text-slate-400 mt-0.5" />
+              <div>
+                <div className="text-sm font-semibold text-slate-700">Institution</div>
+                <div className="text-slate-600">{profile?.institution || 'Not specified'}</div>
+              </div>
+            </div>
+
+            <div className="flex items-start gap-3 md:col-span-2">
+              <User className="w-5 h-5 text-slate-400 mt-0.5" />
+              <div>
+                <div className="text-sm font-semibold text-slate-700">Bio</div>
+                <div className="text-slate-600 mt-1">{profile?.bio || 'No bio provided.'}</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
     </div>
   );
 }

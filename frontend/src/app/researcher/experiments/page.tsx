@@ -37,26 +37,7 @@ export default function ResearcherDashboard() {
 
   return (
     <div className="min-h-screen bg-slate-50">
-      {/* Top Nav */}
-      <header className="bg-white border-b sticky top-0 z-10">
-        <div className="max-w-7xl mx-auto px-6 h-14 flex justify-between items-center">
-          <div className="flex items-center gap-6">
-            <Link href="/" className="font-black text-lg tracking-tight">CogniScale</Link>
-            <nav className="flex gap-4 text-sm font-medium">
-              <Link href="/researcher/experiments" className="text-blue-600">Experiments</Link>
-              <Link href="/researcher/profile" className="text-slate-600 hover:text-slate-900">Profile</Link>
-            </nav>
-          </div>
-          <div className="flex items-center gap-3">
-            <span className="text-sm text-slate-500">{user?.email}</span>
-            <button onClick={handleLogout} className="text-sm text-slate-500 hover:text-slate-900 border px-3 py-1 rounded-lg hover:bg-slate-50 transition-colors">
-              Sign out
-            </button>
-          </div>
-        </div>
-      </header>
-
-      <main className="max-w-7xl mx-auto px-6 py-8">
+      <main className="max-w-7xl mx-auto px-6 py-2">
         {/* Greeting + CTA */}
         <div className="flex justify-between items-start mb-8">
           <div>
@@ -170,6 +151,27 @@ export default function ResearcherDashboard() {
                             <Link href={`/researcher/experiments/${exp.id}/builder`} className="text-xs text-blue-600 hover:underline font-medium">
                               Builder
                             </Link>
+                            {exp.status === 'PUBLISHED' ? (
+                              <button 
+                                onClick={async () => {
+                                  try {
+                                    const { experimentsApi } = await import('@/lib/api/experiments');
+                                    await experimentsApi.update(exp.id, { status: 'DRAFT' } as any);
+                                    queryClient.invalidateQueries({ queryKey: ['researcher-experiments'] });
+                                    queryClient.invalidateQueries({ queryKey: ['public-experiments'] });
+                                  } catch (e) {
+                                    console.error(e);
+                                  }
+                                }}
+                                className="text-xs text-amber-600 hover:underline font-medium"
+                              >
+                                Unpublish
+                              </button>
+                            ) : (
+                              <Link href={`/researcher/experiments/${exp.id}/publish`} className="text-xs text-emerald-600 hover:underline font-medium">
+                                Publish
+                              </Link>
+                            )}
                             <Link href={`/researcher/experiments/${exp.id}/results`} className="text-xs text-slate-600 hover:underline font-medium">
                               Results
                             </Link>

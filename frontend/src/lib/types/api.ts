@@ -102,6 +102,12 @@ export interface Experiment {
     sessions: number;
   };
   eligibilityRules?: EligibilityRule[];
+  researcher?: {
+    institution: string;
+    user: {
+      email: string;
+    }
+  };
 }
 
 export interface CreateExperimentRequest {

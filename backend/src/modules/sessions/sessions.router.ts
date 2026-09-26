@@ -25,7 +25,7 @@ const batchEventsSchema = z.object({
   events: z.array(
     z.object({
       eventId: z.string().min(1).max(100),
-      trialId: z.string().uuid(),
+      trialId: z.string().min(1),
       trialSequence: z.number().int().min(0),
       condition: z.string().optional(),
       stimulusId: z.string().optional(),
@@ -69,7 +69,7 @@ sessionsRouter.post(
  * POST /sessions/:sessionId/events/batch — Ingest batch events (idempotent)
  */
 sessionsRouter.post(
-  '/:sessionId/events/batch',
+  '/sessions/:sessionId/events/batch',
   authenticate,
   requireParticipant,
   eventLimiter,
@@ -93,7 +93,7 @@ sessionsRouter.post(
  * POST /sessions/:sessionId/complete — Complete a session
  */
 sessionsRouter.post(
-  '/:sessionId/complete',
+  '/sessions/:sessionId/complete',
   authenticate,
   requireParticipant,
   validate({ params: sessionIdParam }),
@@ -115,7 +115,7 @@ sessionsRouter.post(
  * GET /sessions/:sessionId — Get session details
  */
 sessionsRouter.get(
-  '/:sessionId',
+  '/sessions/:sessionId',
   authenticate,
   validate({ params: sessionIdParam }),
   async (req: Request, res: Response, next: NextFunction) => {

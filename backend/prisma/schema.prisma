@@ -116,7 +116,7 @@ model ParticipantProfile {
   age                    Int
   gender                 String?
   educationLevel         String?
-  qualityRating          Float  @default(100.0)
+  qualityRating          Float  @default(1200.0)
   totalRewardPoints      Int    @default(0)
   completedSessionsCount Int    @default(0)
 

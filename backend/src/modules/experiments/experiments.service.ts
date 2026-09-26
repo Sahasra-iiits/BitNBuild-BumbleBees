@@ -355,6 +355,12 @@ export class ExperimentService {
           attemptPolicy: true,
           createdAt: true,
           _count: { select: { sessions: true } },
+          researcher: {
+            select: {
+              institution: true,
+              user: { select: { email: true } }
+            }
+          },
         },
       }),
       prisma.experiment.count({

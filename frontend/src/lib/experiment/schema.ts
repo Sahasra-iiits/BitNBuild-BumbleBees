@@ -86,6 +86,15 @@ export interface SliderRatingElement extends BaseElement {
   scoring: ScoringConfig;
 }
 
+export interface TextInputElement extends BaseElement {
+  type: 'TEXT_INPUT';
+  config: {
+    placeholder?: string;
+    multiline: boolean;
+  };
+  scoring: ScoringConfig;
+}
+
 export type ExperimentElement = 
   | TextInstructionElement
   | FixationCrossElement
@@ -94,7 +103,8 @@ export type ExperimentElement =
   | KeyboardPressElement
   | MouseClickElement
   | MultipleChoiceElement
-  | SliderRatingElement;
+  | SliderRatingElement
+  | TextInputElement;
 
 export interface Trial {
   id: string;
@@ -111,11 +121,10 @@ export interface Experiment {
   trials: Trial[];
 }
 
+import { v4 as uuidv4 } from 'uuid';
+
 export function generateId(): string {
-  if (typeof crypto !== 'undefined' && crypto.randomUUID) {
-    return crypto.randomUUID();
-  }
-  return Math.random().toString(36).substring(2, 9);
+  return uuidv4();
 }
 
 export function getDefaultScoring(): ScoringConfig {

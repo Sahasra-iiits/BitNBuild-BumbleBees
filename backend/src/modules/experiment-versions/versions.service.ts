@@ -10,20 +10,7 @@ import { computeConfigHash } from '../../common/utils/crypto';
 import { AuditService } from '../audit/audit.service';
 
 export interface CreateVersionInput {
-  trials?: Array<{
-    sequenceOrder: number;
-    trialType: string;
-    name?: string;
-    configuration: Record<string, unknown>;
-    stimulusConfig?: Record<string, unknown>;
-    durationMs?: number;
-    timeoutMs?: number;
-    elements?: Array<{
-      elementType: string;
-      configuration: Record<string, unknown>;
-      sequenceOrder: number;
-    }>;
-  }>;
+  trials?: Array<any>;
   logicRules?: Array<{
     sourceTrialId?: string;
     targetTrialId?: string;
@@ -184,33 +171,38 @@ export class VersionService {
           configSnapshot: configSnapshot as any,
           configHash: computeConfigHash(configSnapshot),
           createdBy: actorId,
+          publishedAt: new Date(),
         },
       });
 
       // Create trials
       if (input.trials?.length) {
+        let trialSequence = 0;
         for (const trial of input.trials) {
+          const trialType = trial.elements?.[0]?.type || 'CUSTOM';
           const createdTrial = await tx.experimentTrial.create({
             data: {
+              id: trial.id,
               versionId: ver.id,
-              sequenceOrder: trial.sequenceOrder,
-              trialType: trial.trialType,
-              name: trial.name,
-              configuration: trial.configuration as any,
-              stimulusConfig: trial.stimulusConfig as any,
-              durationMs: trial.durationMs,
-              timeoutMs: trial.timeoutMs,
+              sequenceOrder: trial.sequenceOrder ?? trialSequence++,
+              trialType: trial.trialType || trialType,
+              name: trial.name || 'Unnamed Trial',
+              configuration: trial as any,
+              stimulusConfig: trial.stimulusConfig as any || {},
+              durationMs: trial.durationMs || null,
+              timeoutMs: trial.timeoutMs || null,
             },
           });
 
           // Create elements
           if (trial.elements?.length) {
+            let elementSequence = 0;
             await tx.trialElement.createMany({
-              data: trial.elements.map((el) => ({
+              data: trial.elements.map((el: any) => ({
                 trialId: createdTrial.id,
-                elementType: el.elementType,
-                configuration: el.configuration as any,
-                sequenceOrder: el.sequenceOrder,
+                elementType: el.type || el.elementType || 'UNKNOWN',
+                configuration: el as any,
+                sequenceOrder: el.sequenceOrder ?? elementSequence++,
               })),
             });
           }
