@@ -30,7 +30,8 @@ experimentsRouter.get(
   optionalAuth,
   validate({ query: listExperimentsQuery }),
   route(async (req, res) => {
-    res.json(await ExperimentService.listPublic(validatedQuery(req)));
+    // Guests only see what they can take part in.
+    res.json(await ExperimentService.listPublic(validatedQuery(req), req.user?.isGuest === true));
   })
 );
 

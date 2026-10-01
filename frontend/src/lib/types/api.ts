@@ -28,7 +28,8 @@ export interface ResearcherProfile {
 export interface ParticipantProfile {
   id: string;
   pseudonymousId: string;
-  age: number;
+  /** Null for guests. */
+  age: number | null;
   gender?: string | null;
   educationLevel?: string | null;
   qualityRating: number;
@@ -40,6 +41,8 @@ export interface AuthUser {
   id: string;
   email: string;
   role: UserRole;
+  /** Guest participants have no account; they can only take guest-enabled public experiments. */
+  isGuest: boolean;
   isEmailVerified: boolean;
   isActive: boolean;
   createdAt: string;
@@ -99,6 +102,7 @@ export interface Experiment {
   instructions: string | null;
   status: ExperimentStatus;
   visibility: ExperimentVisibility;
+  allowGuests: boolean;
   rewardPoints: number;
   attemptPolicy: AttemptPolicy;
   maxAttempts: number;
@@ -129,6 +133,7 @@ export interface UpdateExperimentRequest {
   description?: string;
   instructions?: string;
   visibility?: ExperimentVisibility;
+  allowGuests?: boolean;
   rewardPoints?: number;
   attemptPolicy?: AttemptPolicy;
   maxAttempts?: number;
@@ -179,6 +184,7 @@ export interface PublicExperiment {
   instructions?: string | null;
   status?: ExperimentStatus;
   rewardPoints: number;
+  allowGuests: boolean;
   attemptPolicy: AttemptPolicy;
   maxAttempts: number;
   researcher: { institution: string } | null;
@@ -307,6 +313,7 @@ export interface ResultsResponse {
 export interface SessionListItem {
   id: string;
   pseudonymousRef: string;
+  isGuest: boolean;
   status: SessionStatus;
   startedAt: string;
   completedAt: string | null;
@@ -320,6 +327,7 @@ export interface SessionListItem {
 export interface RawDataRow {
   id: string;
   participant: string;
+  isGuest: boolean;
   sessionId: string;
   sessionStatus: SessionStatus;
   versionNumber: number;

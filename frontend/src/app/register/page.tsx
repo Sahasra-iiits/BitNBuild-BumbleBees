@@ -4,6 +4,7 @@ import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { ApiRequestError } from '@/lib/api/client';
 import { homeForRole, useAuth } from '@/lib/context/AuthContext';
+import { GuestButton } from '@/components/auth/GuestButton';
 
 type Role = 'RESEARCHER' | 'PARTICIPANT';
 
@@ -168,6 +169,12 @@ export default function RegisterPage() {
             {isLoading ? 'Creating account...' : 'Create Account'}
           </button>
         </form>
+
+        {role === 'PARTICIPANT' && (
+          <div className="mt-6">
+            <GuestButton />
+          </div>
+        )}
 
         <div className="mt-6 text-center text-sm text-slate-500">
           Already have an account?{' '}

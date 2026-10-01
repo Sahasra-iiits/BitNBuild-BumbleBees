@@ -62,6 +62,8 @@ export class ExperimentService {
         description: input.description,
         instructions: input.instructions,
         visibility: input.visibility,
+        // Guests may only join public experiments.
+        allowGuests: input.visibility === 'PUBLIC' && input.allowGuests,
         rewardPoints: input.rewardPoints,
         attemptPolicy: input.attemptPolicy,
         maxAttempts: input.maxAttempts,
@@ -147,6 +149,7 @@ export class ExperimentService {
         instructions: true,
         status: true,
         visibility: true,
+        allowGuests: true,
         rewardPoints: true,
         attemptPolicy: true,
         maxAttempts: true,
@@ -181,6 +184,12 @@ export class ExperimentService {
       throw new ValidationError('maxAttempts must be 1 when only one attempt is allowed');
     }
 
+    const visibility = input.visibility ?? experiment.visibility;
+    const allowGuests = input.allowGuests ?? experiment.allowGuests;
+    if (input.allowGuests === true && visibility !== 'PUBLIC') {
+      throw new ValidationError('Guests can only be allowed on public experiments');
+    }
+
     const updated = await prisma.$transaction(async (tx) => {
       if (input.eligibilityRules) {
         await tx.eligibilityRule.deleteMany({ where: { experimentId } });
@@ -197,6 +206,8 @@ export class ExperimentService {
           description: input.description,
           instructions: input.instructions,
           visibility: input.visibility,
+          // Making an experiment private also turns guest access off.
+          allowGuests: visibility === 'PUBLIC' && allowGuests,
           rewardPoints: input.rewardPoints,
           attemptPolicy,
           maxAttempts: attemptPolicy === 'ALLOW_ONE_ATTEMPT' ? 1 : maxAttempts,
@@ -419,13 +430,13 @@ export class ExperimentService {
   // ===========================================================================
   // PUBLIC LISTING (for participants)
   // ===========================================================================
-  static async listPublic(query: { page?: number; limit?: number }) {
-    const cacheKey = `experiments:public:${query.page || 1}:${query.limit || 20}`;
+  static async listPublic(query: { page?: number; limit?: number }, guestsOnly = false) {
+    const cacheKey = `experiments:public:${guestsOnly ? 'guest' : 'all'}:${query.page || 1}:${query.limit || 20}`;
     const cached = await cacheGet(cacheKey);
     if (cached) return JSON.parse(cached);
 
     const pagination = parsePagination(query);
-    const where: Prisma.ExperimentWhereInput = { status: EXPERIMENT_STATUS.PUBLISHED, visibility: 'PUBLIC' };
+    const where: Prisma.ExperimentWhereInput = { status: EXPERIMENT_STATUS.PUBLISHED, visibility: 'PUBLIC', ...(guestsOnly ? { allowGuests: true } : {}) };
 
     const [experiments, total] = await Promise.all([
       prisma.experiment.findMany({
@@ -438,6 +449,7 @@ export class ExperimentService {
           title: true,
           description: true,
           rewardPoints: true,
+          allowGuests: true,
           attemptPolicy: true,
           maxAttempts: true,
           createdAt: true,
@@ -467,12 +479,18 @@ export class ExperimentService {
       return { eligible: false, code: 'NOT_ACCEPTING', reason: 'This experiment is not currently accepting participants.' };
     }
 
-    const participant = await prisma.participantProfile.findUnique({ where: { id: participantProfileId } });
+    const participant = await prisma.participantProfile.findUnique({ where: { id: participantProfileId }, include: { user: { select: { isGuest: true } } } });
     if (!participant) return { eligible: false, code: 'NO_PROFILE', reason: 'Participant profile not found.' };
+    if (participant.user.isGuest && !(experiment.visibility === 'PUBLIC' && experiment.allowGuests)) {
+      return { eligible: false, code: 'ACCOUNT_REQUIRED', reason: 'This experiment needs a participant account. Create a free account to take part.' };
+    }
 
     const now = new Date();
     for (const rule of experiment.eligibilityRules) {
       if (rule.ruleType === 'AGE_RANGE') {
+        if (participant.age === null) {
+          return { eligible: false, code: 'ACCOUNT_REQUIRED', reason: 'This experiment has an age requirement. Create a free account with your age to take part.' };
+        }
         if (rule.minAge !== null && participant.age < rule.minAge) {
           return { eligible: false, code: 'AGE_NOT_MET', reason: `Participants must be at least ${rule.minAge} years old.` };
         }

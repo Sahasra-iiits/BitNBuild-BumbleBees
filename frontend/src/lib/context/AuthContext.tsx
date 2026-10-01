@@ -17,6 +17,8 @@ interface AuthContextValue extends AuthState {
   isAuthenticated: boolean;
   login: (email: string, password: string) => Promise<AuthUser>;
   register: (data: RegisterRequest) => Promise<AuthUser>;
+  /** Signs in as a guest participant without an account. */
+  continueAsGuest: () => Promise<AuthUser>;
   logout: () => Promise<void>;
   /** Re-reads the current user (e.g. after rating/reward changes). */
   refreshUser: () => Promise<void>;
@@ -62,6 +64,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     return result.user;
   }, []);
 
+  const continueAsGuest = useCallback(async () => {
+    const result = await authApi.guest();
+    setState({ user: result.user, isLoading: false });
+    return result.user;
+  }, []);
+
   const logout = useCallback(async () => {
     try {
       await authApi.logout();
@@ -71,7 +79,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   return (
-    <AuthContext.Provider value={{ ...state, isAuthenticated: !!state.user, login, register, logout, refreshUser }}>
+    <AuthContext.Provider value={{ ...state, isAuthenticated: !!state.user, login, register, continueAsGuest, logout, refreshUser }}>
       {children}
     </AuthContext.Provider>
   );
@@ -90,21 +98,24 @@ export function homeForRole(role: UserRole): string {
 /**
  * Redirects to /login when signed out and to the user's own area when the role
  * does not match. Returns true only once the user is allowed to see the page.
+ * `signedOutTarget` replaces the login redirect after a deliberate sign-out.
  */
-export function useRequireRole(roles: UserRole[]): { allowed: boolean; user: AuthUser | null } {
+export function useRequireRole(roles: UserRole[], signedOutTarget: string | null = null): { allowed: boolean; user: AuthUser | null } {
   const { user, isLoading } = useAuth();
   const router = useRouter();
   const allowed = !!user && roles.includes(user.role);
 
   useEffect(() => {
     if (isLoading) return;
-    if (!user) {
+    if (!user && signedOutTarget) {
+      router.replace(signedOutTarget);
+    } else if (!user) {
       const next = typeof window !== 'undefined' ? window.location.pathname + window.location.search : '/';
       router.replace(`/login?next=${encodeURIComponent(next)}`);
     } else if (!roles.includes(user.role)) {
       router.replace(homeForRole(user.role));
     }
-  }, [isLoading, user, roles, router]);
+  }, [isLoading, user, roles, router, signedOutTarget]);
 
   return { allowed, user };
 }

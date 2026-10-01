@@ -79,6 +79,8 @@ model User {
   email           String   @unique
   passwordHash    String
   role            Role
+  /// Guest participants have no email or password; they can only take guest-enabled public experiments.
+  isGuest         Boolean  @default(false)
   isEmailVerified Boolean  @default(false)
   isActive        Boolean  @default(true)
   createdAt       DateTime @default(now())
@@ -113,7 +115,8 @@ model ParticipantProfile {
   id                     String @id @default(uuid())
   userId                 String @unique
   pseudonymousId         String @unique
-  age                    Int
+  /// Null for guests, who are not asked for demographics.
+  age                    Int?
   gender                 String?
   educationLevel         String?
   qualityRating          Float  @default(1200.0)
@@ -166,6 +169,8 @@ model Experiment {
   instructions  String?
   status        ExperimentStatus     @default(DRAFT)
   visibility    ExperimentVisibility @default(PRIVATE)
+  /// Public experiments only: participants may take part as a guest without an account.
+  allowGuests   Boolean              @default(false)
   rewardPoints  Int                  @default(0)
   attemptPolicy AttemptPolicy        @default(ALLOW_MULTIPLE_ATTEMPTS)
   maxAttempts   Int                  @default(100)

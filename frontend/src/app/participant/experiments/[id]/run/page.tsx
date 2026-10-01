@@ -304,9 +304,11 @@ export default function ParticipantRunPage() {
             <Link href="/participant/experiments" className="px-5 py-2.5 rounded-lg bg-slate-900 text-white font-medium">
               Find more experiments
             </Link>
-            <Link href="/participant/rating" className="px-5 py-2.5 rounded-lg border font-medium">
-              Rating history
-            </Link>
+            {!user?.isGuest && (
+              <Link href="/participant/rating" className="px-5 py-2.5 rounded-lg border font-medium">
+                Rating history
+              </Link>
+            )}
           </div>
         </div>
       );
@@ -337,6 +339,11 @@ export default function ParticipantRunPage() {
             <div className="p-4 rounded-lg bg-amber-50 border border-amber-200 text-amber-900">
               <div className="font-semibold">You cannot take part in this experiment</div>
               <div className="text-sm">{eligibility?.reason}</div>
+              {eligibility?.code === 'ACCOUNT_REQUIRED' && (
+                <Link href="/register" className="inline-block mt-3 px-4 py-2 rounded-lg bg-blue-600 text-white text-sm font-medium hover:bg-blue-700">
+                  Create a free account
+                </Link>
+              )}
             </div>
           ) : (
             <>

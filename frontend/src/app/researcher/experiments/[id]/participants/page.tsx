@@ -13,6 +13,7 @@ interface FormState {
   description: string;
   instructions: string;
   visibility: ExperimentVisibility;
+  allowGuests: boolean;
   rewardPoints: number | null;
   attemptPolicy: AttemptPolicy;
   maxAttempts: number | null;
@@ -38,6 +39,7 @@ function fromExperiment(e: ExperimentDetail): FormState {
     description: e.description ?? '',
     instructions: e.instructions ?? '',
     visibility: e.visibility,
+    allowGuests: e.allowGuests,
     rewardPoints: e.rewardPoints,
     attemptPolicy: e.attemptPolicy,
     maxAttempts: e.maxAttempts,
@@ -120,6 +122,7 @@ function SettingsForm({ experiment }: { experiment: ExperimentDetail }) {
         description: form.description,
         instructions: form.instructions,
         visibility: form.visibility,
+        allowGuests: form.visibility === 'PUBLIC' && form.allowGuests,
         rewardPoints: form.rewardPoints ?? 0,
         attemptPolicy: form.attemptPolicy,
         maxAttempts: form.attemptPolicy === 'ALLOW_ONE_ATTEMPT' ? 1 : form.maxAttempts ?? 1,
@@ -160,6 +163,19 @@ function SettingsForm({ experiment }: { experiment: ExperimentDetail }) {
               </span>
             </label>
           ))}
+          <div className={`pt-2 ${form.visibility === 'PUBLIC' ? '' : 'opacity-50'}`}>
+            <Toggle
+              label="Allow guests (no account needed)"
+              hint={
+                form.visibility === 'PUBLIC'
+                  ? 'Anyone can take part without signing up. Guests have no age or other details, so an age restriction blocks them. Their data is marked as guest in results and exports.'
+                  : 'Only public experiments can allow guests.'
+              }
+              checked={form.visibility === 'PUBLIC' && form.allowGuests}
+              onChange={(v) => set('allowGuests', v)}
+              disabled={form.visibility !== 'PUBLIC'}
+            />
+          </div>
         </section>
 
         <section className="bg-white border rounded-xl p-5 space-y-4">

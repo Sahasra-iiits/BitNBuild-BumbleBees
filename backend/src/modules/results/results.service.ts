@@ -134,6 +134,7 @@ export class ResultsService {
         select: {
           id: true,
           pseudonymousRef: true,
+          participant: { select: { user: { select: { isGuest: true } } } },
           status: true,
           startedAt: true,
           completedAt: true,
@@ -146,7 +147,11 @@ export class ResultsService {
       }),
       prisma.experimentSession.count({ where }),
     ]);
-    return paginatedResult(sessions, total, pagination);
+    return paginatedResult(
+      sessions.map(({ participant, ...s }) => ({ ...s, isGuest: participant.user.isGuest })),
+      total,
+      pagination
+    );
   }
 
   /** Trial-level rows for the raw data table. */
@@ -169,7 +174,7 @@ export class ResultsService {
       prisma.trialResponse.findMany({
         where,
         include: {
-          session: { select: { pseudonymousRef: true, status: true, version: { select: { versionNumber: true } } } },
+          session: { select: { pseudonymousRef: true, status: true, version: { select: { versionNumber: true } }, participant: { select: { user: { select: { isGuest: true } } } } } },
           trial: { select: { id: true, trialKey: true, name: true } },
         },
         orderBy: [{ session: { startedAt: 'asc' } }, { sessionId: 'asc' }, { trialSequence: 'asc' }],
@@ -188,6 +193,7 @@ export class ResultsService {
         return {
           id: r.id,
           participant: r.session.pseudonymousRef,
+          isGuest: r.session.participant.user.isGuest,
           sessionId: r.sessionId,
           sessionStatus: r.session.status,
           versionNumber: r.session.version.versionNumber,

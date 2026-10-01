@@ -12,6 +12,8 @@ export interface TokenPayload {
   email: string;
   participantProfileId?: string;
   researcherProfileId?: string;
+  /** Guest participant (no account). Absent in tokens issued before guests existed. */
+  isGuest?: boolean;
 }
 
 export interface DecodedToken extends TokenPayload {

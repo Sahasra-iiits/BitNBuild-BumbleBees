@@ -14,6 +14,13 @@ export const authApi = {
     return result;
   },
 
+  /** Starts a guest visit (no account). */
+  guest: async (): Promise<AuthResponse> => {
+    const result = await api.post<AuthResponse>('/auth/guest', {}, { skipAuth: true });
+    tokenStore.set(result.accessToken);
+    return result;
+  },
+
   logout: async (): Promise<void> => {
     try {
       await api.post('/auth/logout');

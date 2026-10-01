@@ -5,12 +5,74 @@
 import { AUDIT_ACTIONS, RATING, ROLES, UserRole } from '../../config/constants';
 import { prisma } from '../../config/database';
 import { ConflictError, NotFoundError, UnauthorizedError, ValidationError } from '../../common/errors/app-error';
+import { randomBytes, randomUUID } from 'crypto';
 import { generatePseudonymousCode, hashPassword, hashString, verifyPassword } from '../../common/utils/crypto';
 import { signAccessToken, signRefreshToken, TokenPayload, verifyRefreshToken } from '../../common/utils/jwt';
 import { AuditService } from '../audit/audit.service';
 import type { LoginInput, RegisterInput } from './auth.schema';
 
+type TokenUser = {
+  id: string;
+  role: string;
+  email: string;
+  isGuest: boolean;
+  participantProfile: { id: string } | null;
+  researcherProfile: { id: string } | null;
+};
+
+function tokenPayloadFor(user: TokenUser): TokenPayload {
+  return {
+    userId: user.id,
+    role: user.role as UserRole,
+    email: user.email,
+    participantProfileId: user.participantProfile?.id,
+    researcherProfileId: user.researcherProfile?.id,
+    isGuest: user.isGuest || undefined,
+  };
+}
+
+/** Guests get an internal address on a reserved domain (RFC 2606) so it can never receive mail or collide. */
+export const GUEST_EMAIL_DOMAIN = 'guest.invalid';
+
 export class AuthService {
+  /**
+   * Creates a guest participant: no email, password or demographics. The account
+   * only exists to own the guest's sessions; the browser keeps it via the refresh cookie.
+   */
+  public static async createGuest(ipAddress?: string, userAgent?: string) {
+    const user = await prisma.user.create({
+      data: {
+        email: `guest-${randomUUID()}@${GUEST_EMAIL_DOMAIN}`,
+        // A random secret nobody knows: guests cannot sign in with a password.
+        passwordHash: await hashPassword(randomBytes(32).toString('hex')),
+        role: ROLES.PARTICIPANT,
+        isGuest: true,
+        isEmailVerified: false,
+        participantProfile: {
+          create: { pseudonymousId: generatePseudonymousCode(), age: null, qualityRating: RATING.DEFAULT, totalRewardPoints: 0 },
+        },
+      },
+      include: { researcherProfile: true, participantProfile: true },
+    });
+
+    const payload = tokenPayloadFor(user);
+    const accessToken = signAccessToken(payload);
+    const refreshToken = signRefreshToken(payload);
+    await prisma.userSession.create({
+      data: { userId: user.id, refreshTokenHash: hashString(refreshToken), userAgent, ipAddress, expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000) },
+    });
+    await AuditService.record({
+      actorId: user.id,
+      actorRole: user.role,
+      action: AUDIT_ACTIONS.GUEST_STARTED,
+      resourceType: 'USER',
+      resourceId: user.id,
+      ipAddressRedacted: ipAddress,
+      userAgent,
+    });
+    return { user: await this.getCurrentUser(user.id), accessToken, refreshToken };
+  }
+
   public static async register(input: RegisterInput, ipAddress?: string, userAgent?: string) {
     const existing = await prisma.user.findUnique({
       where: { email: input.email.toLowerCase() },
@@ -62,13 +124,7 @@ export class AuthService {
       },
     });
 
-    const tokenPayload: TokenPayload = {
-      userId: user.id,
-      role: user.role as UserRole,
-      email: user.email,
-      participantProfileId: user.participantProfile?.id,
-      researcherProfileId: user.researcherProfile?.id,
-    };
+    const tokenPayload = tokenPayloadFor(user);
 
     const accessToken = signAccessToken(tokenPayload);
     const refreshToken = signRefreshToken(tokenPayload);
@@ -115,7 +171,7 @@ export class AuthService {
       },
     });
 
-    if (!user || !user.isActive) {
+    if (!user || !user.isActive || user.isGuest) {
       throw new UnauthorizedError('Invalid email or password');
     }
 
@@ -124,13 +180,7 @@ export class AuthService {
       throw new UnauthorizedError('Invalid email or password');
     }
 
-    const tokenPayload: TokenPayload = {
-      userId: user.id,
-      role: user.role as UserRole,
-      email: user.email,
-      participantProfileId: user.participantProfile?.id,
-      researcherProfileId: user.researcherProfile?.id,
-    };
+    const tokenPayload = tokenPayloadFor(user);
 
     const accessToken = signAccessToken(tokenPayload);
     const refreshToken = signRefreshToken(tokenPayload);
@@ -200,13 +250,7 @@ export class AuthService {
       throw new UnauthorizedError('Session expired or revoked');
     }
 
-    const newPayload: TokenPayload = {
-      userId: session.user.id,
-      role: session.user.role as UserRole,
-      email: session.user.email,
-      participantProfileId: session.user.participantProfile?.id,
-      researcherProfileId: session.user.researcherProfile?.id,
-    };
+    const newPayload = tokenPayloadFor(session.user);
 
     const newAccessToken = signAccessToken(newPayload);
     return {
@@ -215,6 +259,7 @@ export class AuthService {
         id: session.user.id,
         email: session.user.email,
         role: session.user.role,
+        isGuest: session.user.isGuest,
       },
     };
   }
@@ -247,6 +292,7 @@ export class AuthService {
         id: true,
         email: true,
         role: true,
+        isGuest: true,
         isEmailVerified: true,
         isActive: true,
         createdAt: true,

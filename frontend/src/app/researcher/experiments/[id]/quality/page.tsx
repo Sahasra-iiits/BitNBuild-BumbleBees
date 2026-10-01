@@ -180,7 +180,10 @@ function SessionsSection({ experimentId }: { experimentId: string }) {
             <tbody>
               {list.map((s) => (
                 <tr key={s.id} className="border-t align-top">
-                  <td className="px-4 py-2 font-mono text-xs">{s.pseudonymousRef}</td>
+                  <td className="px-4 py-2 font-mono text-xs">
+                    {s.pseudonymousRef}
+                    {s.isGuest && <span className="ml-1.5 font-sans text-[10px] uppercase tracking-wide bg-amber-100 text-amber-800 px-1.5 py-0.5 rounded">Guest</span>}
+                  </td>
                   <td className="px-4 py-2">{s.status}</td>
                   <td className="px-4 py-2">v{s.version.versionNumber}</td>
                   <td className="px-4 py-2 text-right">{s._count.responses}</td>

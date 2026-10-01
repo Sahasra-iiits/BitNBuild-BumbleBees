@@ -52,6 +52,30 @@ authRouter.post(
 );
 
 /**
+ * POST /auth/guest - take part without an account (guest-enabled public experiments only).
+ */
+authRouter.post(
+  '/guest',
+  authLimiter,
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const result = await AuthService.createGuest(req.ip, req.headers['user-agent']);
+      res.cookie('refresh_token', result.refreshToken, {
+        httpOnly: env.COOKIE_HTTP_ONLY,
+        secure: env.COOKIE_SECURE,
+        sameSite: env.COOKIE_SAMESITE,
+        domain: env.COOKIE_DOMAIN,
+        maxAge: 7 * 24 * 60 * 60 * 1000,
+        path: '/api/v1/auth',
+      });
+      res.status(201).json({ user: result.user, accessToken: result.accessToken, refreshToken: result.refreshToken });
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
+/**
  * POST /auth/login
  */
 authRouter.post(

@@ -4,6 +4,7 @@ import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { homeForRole, useAuth } from '@/lib/context/AuthContext';
 import { ApiRequestError } from '@/lib/api/client';
+import { GuestButton } from '@/components/auth/GuestButton';
 
 export default function LoginPage() {
   const router = useRouter();
@@ -106,6 +107,10 @@ export default function LoginPage() {
             {isLoading ? 'Signing in...' : 'Sign in'}
           </button>
         </form>
+
+        <div className="mt-6">
+          <GuestButton />
+        </div>
 
         <div className="mt-6 text-center text-sm text-slate-500">
           Don&apos;t have an account?{' '}

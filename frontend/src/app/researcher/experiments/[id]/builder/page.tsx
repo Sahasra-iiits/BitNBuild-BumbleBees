@@ -44,6 +44,12 @@ import { IssueList } from '@/components/experiment/builder/IssueList';
 import { NumberField, TextField, Toggle, Field, inputClass } from '@/components/experiment/builder/fields';
 import { ADVANCE_MODE_HELP, ADVANCE_MODE_LABEL, elementLabel, RESPONSE_PRESETS, STIMULUS_PRESETS, type ElementPreset } from '@/components/experiment/builder/element-meta';
 import { ImportQuestionsDialog } from '@/components/experiment/builder/ImportQuestionsDialog';
+import { ConfirmDialog } from '@/components/experiment/builder/ConfirmDialog';
+import { readJson, removeKey, writeJson } from '@/lib/storage';
+
+/** Per-experiment, per-browser choice to delete trials without asking first. */
+const skipDeleteConfirmKey = (id: string) => `bitnbuild:skip-delete-trial-confirm:${id}`;
+const isTrue = (v: unknown): v is true => v === true;
 
 function SaveIndicator({ state, error, lastSavedAt, onRetry }: { state: SaveState; error: string | null; lastSavedAt: Date | null; onRetry: () => void }) {
   if (state === 'saving' || state === 'pending') {
@@ -84,6 +90,15 @@ export default function BuilderPage() {
   const [importOpen, setImportOpen] = useState(false);
   const [importNotice, setImportNotice] = useState<string | null>(null);
   const migrationStarted = useRef(false);
+  const [pendingDelete, setPendingDelete] = useState<{ trial: Trial; index: number } | null>(null);
+  const [lastDeleted, setLastDeleted] = useState<{ trial: Trial; index: number } | null>(null);
+  // Only read on the client: the builder shows its loading screen during server rendering.
+  const [skipDeleteConfirm, setSkipDeleteConfirm] = useState(() => typeof window !== 'undefined' && readJson(skipDeleteConfirmKey(experimentId), isTrue) === true);
+  const setAskBeforeDelete = (ask: boolean) => {
+    setSkipDeleteConfirm(!ask);
+    if (ask) removeKey(skipDeleteConfirmKey(experimentId));
+    else writeJson(skipDeleteConfirmKey(experimentId), true);
+  };
 
   const cache = useMemo(() => new AssetCache(), []);
   useEffect(() => () => cache.dispose(), [cache]);
@@ -191,11 +206,31 @@ export default function BuilderPage() {
     if (newId) setSelectedTrialId(newId);
   };
 
-  const onDeleteTrial = (trial: Trial, index: number) => {
-    if (!window.confirm(`Delete "${trial.name || `Trial ${index + 1}`}" and its ${trial.elements.length} element(s)?`)) return;
+  const trialTitle = (trial: Trial, index: number) => trial.name || `Trial ${index + 1}`;
+
+  const deleteTrialNow = (trial: Trial, index: number) => {
     const neighbour = definition.trials[index + 1] ?? definition.trials[index - 1] ?? null;
     update((d) => deleteTrial(d, trial.id));
     setSelectedTrialId(neighbour?.id ?? null);
+    setLastDeleted({ trial, index });
+  };
+
+  const onDeleteTrial = (trial: Trial, index: number) => {
+    if (skipDeleteConfirm) deleteTrialNow(trial, index);
+    else setPendingDelete({ trial, index });
+  };
+
+  const undoDelete = () => {
+    if (!lastDeleted) return;
+    const { trial, index } = lastDeleted;
+    update((d) => {
+      if (d.trials.some((t) => t.id === trial.id)) return d;
+      const next = d.trials.slice();
+      next.splice(Math.min(index, next.length), 0, trial);
+      return { ...d, trials: next };
+    });
+    setSelectedTrialId(trial.id);
+    setLastDeleted(null);
   };
 
   /** Adds a preset (e.g. Checkboxes = multiple choice with multiple selection) to a trial. */
@@ -277,6 +312,17 @@ export default function BuilderPage() {
           <div className="bg-emerald-50 border-b border-emerald-200 text-emerald-900 text-sm px-6 py-2 flex items-center gap-3" role="status">
             {importNotice}
             <button type="button" onClick={() => setImportNotice(null)} className="underline">
+              Dismiss
+            </button>
+          </div>
+        )}
+        {lastDeleted && (
+          <div className="bg-slate-100 border-b border-slate-200 text-slate-800 text-sm px-6 py-2 flex items-center gap-3" role="status">
+            Deleted “{trialTitle(lastDeleted.trial, lastDeleted.index)}”.
+            <button type="button" onClick={undoDelete} className="underline font-medium">
+              Undo
+            </button>
+            <button type="button" onClick={() => setLastDeleted(null)} className="underline">
               Dismiss
             </button>
           </div>
@@ -438,6 +484,12 @@ export default function BuilderPage() {
               checked={definition.settings.randomizeTrialOrder}
               onChange={(randomizeTrialOrder) => update((d) => ({ ...d, settings: { ...d.settings, randomizeTrialOrder } }))}
             />
+            <Toggle
+              label="Ask before deleting a trial"
+              hint="Stored in this browser for this experiment only."
+              checked={!skipDeleteConfirm}
+              onChange={setAskBeforeDelete}
+            />
             <Link href={`/researcher/experiments/${experimentId}/participants`} className="block text-sm text-blue-600 hover:underline">
               Participant access, reward and attempts →
             </Link>
@@ -450,6 +502,20 @@ export default function BuilderPage() {
           </div>
         </aside>
       </div>
+      {pendingDelete && (
+        <ConfirmDialog
+          title="Delete trial?"
+          message={`“${trialTitle(pendingDelete.trial, pendingDelete.index)}” and its ${pendingDelete.trial.elements.length} element${pendingDelete.trial.elements.length === 1 ? '' : 's'} will be removed.`}
+          confirmLabel="Delete trial"
+          dontAskLabel="Don't ask again for this experiment"
+          onCancel={() => setPendingDelete(null)}
+          onConfirm={(dontAskAgain) => {
+            if (dontAskAgain) setAskBeforeDelete(false);
+            deleteTrialNow(pendingDelete.trial, pendingDelete.index);
+            setPendingDelete(null);
+          }}
+        />
+      )}
       {importOpen && <ImportQuestionsDialog onClose={() => setImportOpen(false)} onImport={onImportTrials} startNumber={definition.trials.length + 1} />}
     </div>
   );

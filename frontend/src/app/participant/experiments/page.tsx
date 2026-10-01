@@ -4,9 +4,13 @@ import { useQuery } from '@tanstack/react-query';
 import { FlaskConical } from 'lucide-react';
 import { publicExperimentsApi } from '@/lib/api/experiments';
 import { errorMessage } from '@/lib/api/client';
+import { useAuth } from '@/lib/context/AuthContext';
 
 export default function DiscoveryPage() {
-  const { data, isLoading, error, refetch } = useQuery({ queryKey: ['public-experiments'], queryFn: () => publicExperimentsApi.list({ limit: 50 }), refetchOnMount: 'always' });
+  const { user } = useAuth();
+  const isGuest = !!user?.isGuest;
+  // The server lists only guest-enabled experiments to guests; the key keeps the two lists apart.
+  const { data, isLoading, error, refetch } = useQuery({ queryKey: ['public-experiments', isGuest ? 'guest' : 'member'], queryFn: () => publicExperimentsApi.list({ limit: 50 }), refetchOnMount: 'always' });
   const experiments = data?.data ?? [];
 
   return (
@@ -25,7 +29,7 @@ export default function DiscoveryPage() {
         <div className="p-16 text-center bg-white border rounded-xl">
           <FlaskConical className="w-12 h-12 text-slate-300 mx-auto mb-4" />
           <h2 className="text-lg font-semibold mb-1">No experiments available</h2>
-          <p className="text-slate-500">Check back later for new studies.</p>
+          <p className="text-slate-500">{isGuest ? 'No study is open to guests right now. Create a free account to see every public study.' : 'Check back later for new studies.'}</p>
         </div>
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
@@ -37,7 +41,10 @@ export default function DiscoveryPage() {
                 {e.description && <p className="text-sm text-slate-700 line-clamp-3">{e.description}</p>}
               </div>
               <div className="flex items-center justify-between gap-3">
-                <span className="bg-blue-50 text-blue-700 font-bold px-3 py-1 rounded-full text-sm">+{e.rewardPoints} points</span>
+                <span className="flex flex-wrap gap-2">
+                  <span className="bg-blue-50 text-blue-700 font-bold px-3 py-1 rounded-full text-sm">+{e.rewardPoints} points</span>
+                  {e.allowGuests && !isGuest && <span className="bg-emerald-50 text-emerald-700 px-3 py-1 rounded-full text-sm">Guests welcome</span>}
+                </span>
                 <Link href={`/participant/experiments/${e.id}/run`} className="bg-slate-900 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-slate-800">
                   View & start
                 </Link>

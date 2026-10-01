@@ -16,6 +16,7 @@ export interface ExportFilters {
 
 export interface ExportRow {
   participant_id: string;
+  participant_type: 'guest' | 'registered';
   session_id: string;
   session_status: string;
   session_quality: string | null;
@@ -44,6 +45,7 @@ export interface ExportRow {
 
 export const EXPORT_COLUMNS: Array<keyof ExportRow> = [
   'participant_id',
+  'participant_type',
   'session_id',
   'session_status',
   'session_quality',
@@ -72,6 +74,7 @@ export const EXPORT_COLUMNS: Array<keyof ExportRow> = [
 
 export const EXPORT_CODEBOOK: Record<keyof ExportRow, string> = {
   participant_id: 'Pseudonymous participant code (no personal data).',
+  participant_type: '"guest" (took part without an account, no demographics) or "registered".',
   session_id: 'Experiment session (one attempt by one participant).',
   session_status: 'STARTED, IN_PROGRESS, COMPLETED, ABANDONED or EXCLUDED.',
   session_quality: 'CLEAN, FLAGGED (automatic quality rule triggered) or EXCLUDED.',
@@ -104,6 +107,10 @@ function valueToString(value: unknown): string | null {
   return String(value);
 }
 
+function participantType(session: { participant: { user: { isGuest: boolean } } }): 'guest' | 'registered' {
+  return session.participant.user.isGuest ? 'guest' : 'registered';
+}
+
 export async function loadExportData(experimentId: string, filters: ExportFilters) {
   const sessionWhere = {
     experimentId,
@@ -114,7 +121,15 @@ export async function loadExportData(experimentId: string, filters: ExportFilter
     where: { session: sessionWhere, ...(filters.includeExcluded ? {} : { excluded: false }) },
     include: {
       session: {
-        select: { id: true, pseudonymousRef: true, status: true, qualityStatus: true, versionId: true, version: { select: { versionNumber: true } } },
+        select: {
+          id: true,
+          pseudonymousRef: true,
+          status: true,
+          qualityStatus: true,
+          versionId: true,
+          version: { select: { versionNumber: true } },
+          participant: { select: { user: { select: { isGuest: true } } } },
+        },
       },
       trial: { select: { id: true, trialKey: true, name: true } },
     },
@@ -131,6 +146,7 @@ export function buildExportRows(experimentId: string, data: ExportData): ExportR
     const payload = r.response as unknown as TrialResponsePayload | null;
     const base = {
       participant_id: r.session.pseudonymousRef,
+      participant_type: participantType(r.session),
       session_id: r.session.id,
       session_status: r.session.status,
       session_quality: r.session.qualityStatus,
@@ -189,12 +205,13 @@ export function toCsv(rows: ExportRow[]): string {
 
 /** Nested JSON: sessions -> trials -> element responses. BigInt timestamps become numbers. */
 export function toJsonDocument(experimentId: string, filters: ExportFilters, data: ExportData) {
-  const sessions = new Map<string, { session_id: string; participant_id: string; status: string; quality: string | null; version_number: number; version_id: string; trials: unknown[] }>();
+  const sessions = new Map<string, { session_id: string; participant_id: string; participant_type: string; status: string; quality: string | null; version_number: number; version_id: string; trials: unknown[] }>();
   for (const r of data) {
     if (!sessions.has(r.session.id)) {
       sessions.set(r.session.id, {
         session_id: r.session.id,
         participant_id: r.session.pseudonymousRef,
+        participant_type: participantType(r.session),
         status: r.session.status,
         quality: r.session.qualityStatus,
         version_number: r.session.version.versionNumber,

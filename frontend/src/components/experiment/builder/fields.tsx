@@ -108,12 +108,12 @@ export function NumberField({
   );
 }
 
-export function Toggle({ label, checked, onChange, hint }: { label: string; checked: boolean; onChange: (v: boolean) => void; hint?: string }) {
+export function Toggle({ label, checked, onChange, hint, disabled }: { label: string; checked: boolean; onChange: (v: boolean) => void; hint?: string; disabled?: boolean }) {
   const id = useId();
   return (
     <div>
       <label htmlFor={id} className="flex items-center gap-2 text-sm text-slate-700 cursor-pointer select-none">
-        <input id={id} type="checkbox" checked={checked} onChange={(e) => onChange(e.target.checked)} className="w-4 h-4 accent-blue-600" />
+        <input id={id} type="checkbox" checked={checked} disabled={disabled} onChange={(e) => onChange(e.target.checked)} className="w-4 h-4 accent-blue-600" />
         {label}
       </label>
       {hint && <p className="text-xs text-slate-400 ml-6">{hint}</p>}

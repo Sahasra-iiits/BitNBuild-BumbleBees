@@ -64,7 +64,10 @@ export default function RawDataPage() {
             <tbody>
               {data.data.map((r) => (
                 <tr key={r.id} className={`border-t ${r.excluded ? 'bg-red-50/50 text-slate-500' : ''}`}>
-                  <td className="px-3 py-2 font-mono text-xs">{r.participant}</td>
+                  <td className="px-3 py-2 font-mono text-xs">
+                    {r.participant}
+                    {r.isGuest && <span className="ml-1.5 font-sans text-[10px] uppercase tracking-wide bg-amber-100 text-amber-800 px-1.5 py-0.5 rounded">Guest</span>}
+                  </td>
                   <td className="px-3 py-2">v{r.versionNumber}</td>
                   <td className="px-3 py-2">{r.trialSequence + 1}</td>
                   <td className="px-3 py-2">{r.trialName ?? r.trialKey}</td>

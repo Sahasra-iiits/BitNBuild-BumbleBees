@@ -15,8 +15,10 @@ export default function ParticipantDashboard() {
     <div className="max-w-5xl mx-auto space-y-8 p-4 sm:p-6">
       <div className="flex flex-wrap gap-4 justify-between items-center">
         <div>
-          <h1 className="text-3xl font-bold tracking-tight">Welcome back</h1>
-          <p className="text-slate-500 mt-1">Participant code {profile?.pseudonymousId}</p>
+          <h1 className="text-3xl font-bold tracking-tight">{user?.isGuest ? 'Welcome, guest' : 'Welcome back'}</h1>
+          <p className="text-slate-500 mt-1">
+            {user?.isGuest ? 'Guest code' : 'Participant code'} {profile?.pseudonymousId}
+          </p>
         </div>
         <Link href="/participant/rating" className="flex items-center gap-4 bg-white p-4 rounded-xl border hover:border-blue-300">
           <div>

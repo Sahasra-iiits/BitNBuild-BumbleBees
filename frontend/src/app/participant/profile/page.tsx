@@ -38,7 +38,7 @@ export default function ParticipantProfilePage() {
               <Calendar className="w-5 h-5 text-slate-400 mt-0.5" />
               <div>
                 <div className="text-sm font-semibold text-slate-700">Age</div>
-                <div className="text-slate-600">{profile?.age} years old</div>
+                <div className="text-slate-600">{profile?.age != null ? `${profile.age} years old` : 'Not provided'}</div>
               </div>
             </div>
 
