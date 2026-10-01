@@ -141,7 +141,7 @@ export default function PreviewPage() {
   if (phase.kind === 'running') {
     return (
       <PreviewOverlayContext.Provider value={{ last: records[records.length - 1] ?? null, missingAssets: missingAssets.length, onRestart: restart, onExit: () => setPhase({ kind: 'ready' }) }}>
-        <ExperimentRunner key={run.key} definition={definition} order={order} assets={cache} onTrialComplete={onTrialComplete} onFinished={onFinished} Overlay={PreviewOverlay} />
+        <ExperimentRunner key={run.key} definition={definition} order={order} assets={cache} seed={run.seed} onTrialComplete={onTrialComplete} onFinished={onFinished} Overlay={PreviewOverlay} />
       </PreviewOverlayContext.Provider>
     );
   }

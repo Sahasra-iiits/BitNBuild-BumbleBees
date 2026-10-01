@@ -41,7 +41,7 @@ function demoDefinition(): ExperimentDefinition {
     { id: 'opt-b', label: 'B' },
     { id: 'opt-c', label: 'C' },
   ];
-  mc.scoring = { enabled: true, correctOptionId: 'opt-b' };
+  mc.scoring = { enabled: true, correctOptionIds: ['opt-b'] };
 
   const slider = el('SLIDER_RATING');
   slider.config = { ...slider.config, prompt: 'How alert do you feel right now?', min: 1, max: 100, step: 1, defaultValue: 50, leftLabel: 'Not at all', rightLabel: 'Extremely' };

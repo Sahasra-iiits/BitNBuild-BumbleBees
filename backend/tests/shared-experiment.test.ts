@@ -113,7 +113,7 @@ describe('parseDefinition / migration', () => {
     const [k, m, img, click] = def.trials[0].elements;
     expect(def.schemaVersion).toBe(2);
     expect(k).toMatchObject({ type: 'KEYBOARD_PRESS', required: true, scoring: { enabled: true, correctKey: 'a' } });
-    expect(m).toMatchObject({ scoring: { enabled: true, correctOptionId: 'o2' } });
+    expect(m).toMatchObject({ scoring: { enabled: true, correctOptionIds: ['o2'] } });
     expect(img).toMatchObject({ config: { assetId: null, url: 'asset://abc' } });
     expect(click).toMatchObject({ type: 'MOUSE_CLICK', config: { prompt: 'Click anywhere to respond' } });
     // The browser-local reference must be flagged, never silently accepted.
@@ -186,7 +186,7 @@ describe('validateDefinition', () => {
 
   it('detects a deleted correct option instead of choosing a replacement', () => {
     const mc = el('MULTIPLE_CHOICE');
-    mc.scoring = { enabled: true, correctOptionId: 'deleted-option' };
+    mc.scoring = { enabled: true, correctOptionIds: ['deleted-option'] };
     expect(codes(defWith(trialWith('response', mc)))).toContain('error:mc_correct_option_missing');
   });
 
@@ -246,7 +246,7 @@ describe('scoring', () => {
     expect(scoreElement(kb, 'l')).toBe(false);
 
     const mc = el('MULTIPLE_CHOICE');
-    mc.scoring = { enabled: true, correctOptionId: mc.config.options[1].id };
+    mc.scoring = { enabled: true, correctOptionIds: [mc.config.options[1].id] };
     expect(scoreElement(mc, mc.config.options[1].id)).toBe(true);
     expect(scoreElement(mc, mc.config.options[0].id)).toBe(false);
 
@@ -354,7 +354,7 @@ describe('advancement rules', () => {
 describe('duplication', () => {
   it('gives the copy new ids and no shared mutable state', () => {
     const mc = el('MULTIPLE_CHOICE');
-    mc.scoring = { enabled: true, correctOptionId: mc.config.options[1].id };
+    mc.scoring = { enabled: true, correctOptionIds: [mc.config.options[1].id] };
     const original = trialWith('response', mc);
     const copy = duplicateTrial(original);
     const copiedMc = copy.elements[0] as typeof mc;
@@ -363,7 +363,7 @@ describe('duplication', () => {
     expect(copiedMc.id).not.toBe(mc.id);
     expect(copiedMc.config.options.map((o) => o.id)).not.toEqual(mc.config.options.map((o) => o.id));
     // The correct answer follows the copied option rather than pointing at the original.
-    expect(copiedMc.scoring.correctOptionId).toBe(copiedMc.config.options[1].id);
+    expect(copiedMc.scoring.correctOptionIds).toEqual([copiedMc.config.options[1].id]);
 
     copiedMc.config.options[0].label = 'changed';
     expect(mc.config.options[0].label).toBe('Option 1');
@@ -425,13 +425,13 @@ describe('edit operations', () => {
   it('clears the correct option or key when it is deleted', () => {
     const mc = el('MULTIPLE_CHOICE');
     const removed = mc.config.options[0].id;
-    mc.scoring = { enabled: true, correctOptionId: removed };
+    mc.scoring = { enabled: true, correctOptionIds: [removed] };
     const after = removeChoiceOption(mc, removed);
-    expect(after.scoring.correctOptionId).toBeNull();
+    expect(after.scoring.correctOptionIds).toEqual([]);
     expect(after.config.options).toHaveLength(1);
     // Deleting a different option keeps the correct answer.
-    mc.scoring.correctOptionId = mc.config.options[1].id;
-    expect(removeChoiceOption(mc, removed).scoring.correctOptionId).toBe(mc.config.options[1].id);
+    mc.scoring.correctOptionIds = [mc.config.options[1].id];
+    expect(removeChoiceOption(mc, removed).scoring.correctOptionIds).toEqual([mc.config.options[1].id]);
 
     const kb = el('KEYBOARD_PRESS');
     kb.config.allowedKeys = ['a', 'l'];

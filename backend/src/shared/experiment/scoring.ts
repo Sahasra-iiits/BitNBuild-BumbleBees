@@ -6,6 +6,16 @@
 import type { ExperimentElement, ResponseValue, Trial } from './types';
 import { isScorableElement } from './types';
 
+function sameSet(a: readonly string[], b: readonly string[]): boolean {
+  const sa = new Set(a);
+  const sb = new Set(b);
+  return sa.size === sb.size && [...sa].every((v) => sb.has(v));
+}
+
+function isGridValue(v: ResponseValue): v is Record<string, string[]> {
+  return typeof v === 'object' && v !== null && !Array.isArray(v) && Object.values(v).every((x) => Array.isArray(x));
+}
+
 export function normalizeTextAnswer(value: string, caseSensitive: boolean): string {
   const collapsed = value.trim().replace(/\s+/g, ' ');
   return caseSensitive ? collapsed : collapsed.toLowerCase();
@@ -21,8 +31,12 @@ export function scoreElement(element: ExperimentElement, value: ResponseValue | 
   switch (element.type) {
     case 'KEYBOARD_PRESS':
       return element.scoring.correctKey !== null && value === element.scoring.correctKey;
-    case 'MULTIPLE_CHOICE':
-      return element.scoring.correctOptionId !== null && value === element.scoring.correctOptionId;
+    case 'MULTIPLE_CHOICE': {
+      const correct = element.scoring.correctOptionIds;
+      if (correct.length === 0) return false;
+      if (element.config.selection === 'single') return typeof value === 'string' && correct.includes(value);
+      return Array.isArray(value) && sameSet(value, correct);
+    }
     case 'SLIDER_RATING': {
       const { correctMin, correctMax } = element.scoring;
       if (typeof value !== 'number' || correctMin === null || correctMax === null) return false;
@@ -36,6 +50,13 @@ export function scoreElement(element: ExperimentElement, value: ResponseValue | 
     }
     case 'YES_NO':
       return element.scoring.correctValue !== null && value === element.scoring.correctValue;
+    case 'DATE_TIME':
+      return element.scoring.correctValue !== null && value === element.scoring.correctValue;
+    case 'CHOICE_GRID': {
+      const scoredRows = Object.entries(element.scoring.correctColumns).filter(([rowId, cols]) => cols.length > 0 && element.config.rows.some((r) => r.id === rowId));
+      if (scoredRows.length === 0 || !isGridValue(value)) return false;
+      return scoredRows.every(([rowId, cols]) => sameSet(value[rowId] ?? [], cols));
+    }
   }
 }
 

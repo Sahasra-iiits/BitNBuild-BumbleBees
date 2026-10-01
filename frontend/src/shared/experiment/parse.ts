@@ -15,7 +15,9 @@ import {
   type ExperimentDefinition,
   type ExperimentElement,
   type FixationStyle,
+  type GridItem,
   type MultipleChoiceOption,
+  type TextValidation,
   type Trial,
 } from './types';
 
@@ -87,6 +89,28 @@ function arr(v: unknown, path: string, max: number): unknown[] {
 /** Legacy drafts stored `{ enabled, type, correctAnswer }` for every response type. */
 function legacyCorrectAnswer(scoring: Json): unknown {
   return scoring.correctAnswer;
+}
+
+function oneOf<T extends string>(v: unknown, path: string, allowed: readonly T[], fallback: T): T {
+  if (v === undefined || v === null || v === '') return fallback;
+  if (typeof v !== 'string' || !(allowed as readonly string[]).includes(v)) {
+    throw new DefinitionParseError(path, `must be one of ${allowed.join(', ')}`);
+  }
+  return v as T;
+}
+
+function parseTextValidation(v: unknown, path: string): TextValidation {
+  if (v === undefined || v === null) return { kind: 'none' };
+  const o = obj(v, path);
+  const kind = oneOf(o.kind, `${path}.kind`, ['none', 'number', 'email', 'url', 'regex'] as const, 'none');
+  switch (kind) {
+    case 'number':
+      return { kind, min: numOrNull(o.min, `${path}.min`), max: numOrNull(o.max, `${path}.max`), integer: bool(o.integer, `${path}.integer`, false) };
+    case 'regex':
+      return { kind, pattern: str(o.pattern, `${path}.pattern`, '', 500), message: str(o.message, `${path}.message`, '', 300) };
+    default:
+      return { kind };
+  }
 }
 
 function parseMedia(cfg: Json, path: string) {
@@ -164,18 +188,33 @@ function parseElement(raw: unknown, path: string): ExperimentElement {
         const opt = obj(o, `${path}.config.options[${i}]`);
         return { id: id(opt.id, `${path}.config.options[${i}].id`), label: str(opt.label, `${path}.config.options[${i}].label`, '', 500) };
       });
-      const correctRaw = scoring.correctOptionId ?? legacyCorrectAnswer(scoring);
-      const correctOptionId =
-        correctRaw === undefined || correctRaw === null || correctRaw === ''
-          ? null
-          : str(correctRaw, `${path}.scoring.correctOptionId`, '', 100);
+      const selection = oneOf(cfg.selection, `${path}.config.selection`, ['single', 'multiple'] as const, 'single');
+      // Older definitions stored a single correctOptionId (or the legacy correctAnswer).
+      let correctOptionIds: string[];
+      if (scoring.correctOptionIds !== undefined) {
+        correctOptionIds = arr(scoring.correctOptionIds, `${path}.scoring.correctOptionIds`, MAX_OPTIONS).map((v, i) =>
+          str(v, `${path}.scoring.correctOptionIds[${i}]`, '', 100)
+        );
+      } else {
+        const correctRaw = scoring.correctOptionId ?? legacyCorrectAnswer(scoring);
+        correctOptionIds =
+          correctRaw === undefined || correctRaw === null || correctRaw === '' ? [] : [str(correctRaw, `${path}.scoring.correctOptionId`, '', 100)];
+      }
       return {
         id: elementId,
         type,
         role: 'RESPONSE',
         required,
-        config: { prompt: str(cfg.prompt, `${path}.config.prompt`, '', 2000), options },
-        scoring: { enabled: scoringEnabled, correctOptionId },
+        config: {
+          prompt: str(cfg.prompt, `${path}.config.prompt`, '', 2000),
+          options,
+          selection,
+          display: selection === 'single' ? oneOf(cfg.display, `${path}.config.display`, ['buttons', 'dropdown'] as const, 'buttons') : 'buttons',
+          shuffleOptions: bool(cfg.shuffleOptions, `${path}.config.shuffleOptions`, false),
+          minSelections: numOrNull(cfg.minSelections, `${path}.config.minSelections`),
+          maxSelections: numOrNull(cfg.maxSelections, `${path}.config.maxSelections`),
+        },
+        scoring: { enabled: scoringEnabled, correctOptionIds: Array.from(new Set(correctOptionIds.filter((v) => v.length > 0))) },
       };
     }
     case 'SLIDER_RATING': {
@@ -188,6 +227,7 @@ function parseElement(raw: unknown, path: string): ExperimentElement {
         required,
         config: {
           prompt: str(cfg.prompt, `${path}.config.prompt`, '', 2000),
+          display: oneOf(cfg.display, `${path}.config.display`, ['slider', 'scale', 'stars'] as const, 'slider'),
           min,
           max,
           step: num(cfg.step, `${path}.config.step`, 1),
@@ -219,6 +259,7 @@ function parseElement(raw: unknown, path: string): ExperimentElement {
           multiline: bool(cfg.multiline, `${path}.config.multiline`, false),
           minLength: num(cfg.minLength, `${path}.config.minLength`, 0),
           maxLength: maxLengthRaw,
+          validation: parseTextValidation(cfg.validation, `${path}.config.validation`),
         },
         scoring: {
           enabled: scoringEnabled,
@@ -242,6 +283,51 @@ function parseElement(raw: unknown, path: string): ExperimentElement {
           noLabel: str(cfg.noLabel, `${path}.config.noLabel`, 'No', 100),
         },
         scoring: { enabled: scoringEnabled, correctValue },
+      };
+    }
+    case 'DATE_TIME': {
+      const correctRaw = scoring.correctValue;
+      return {
+        id: elementId,
+        type,
+        role: 'RESPONSE',
+        required,
+        config: {
+          prompt: str(cfg.prompt, `${path}.config.prompt`, '', 2000),
+          mode: oneOf(cfg.mode, `${path}.config.mode`, ['date', 'time', 'datetime'] as const, 'date'),
+        },
+        scoring: {
+          enabled: scoringEnabled,
+          correctValue: correctRaw === undefined || correctRaw === null || correctRaw === '' ? null : str(correctRaw, `${path}.scoring.correctValue`, '', 30),
+        },
+      };
+    }
+    case 'CHOICE_GRID': {
+      const items = (v: unknown, p: string): GridItem[] =>
+        arr(v, p, MAX_OPTIONS).map((o, i) => {
+          const item = obj(o, `${p}[${i}]`);
+          return { id: id(item.id, `${p}[${i}].id`), label: str(item.label, `${p}[${i}].label`, '', 500) };
+        });
+      const correctObj = obj(scoring.correctColumns, `${path}.scoring.correctColumns`);
+      const correctColumns: Record<string, string[]> = {};
+      for (const [rowId, cols] of Object.entries(correctObj)) {
+        correctColumns[rowId] = arr(cols, `${path}.scoring.correctColumns.${rowId}`, MAX_OPTIONS).map((c, i) =>
+          str(c, `${path}.scoring.correctColumns.${rowId}[${i}]`, '', 100)
+        );
+      }
+      return {
+        id: elementId,
+        type,
+        role: 'RESPONSE',
+        required,
+        config: {
+          prompt: str(cfg.prompt, `${path}.config.prompt`, '', 2000),
+          rows: items(cfg.rows, `${path}.config.rows`),
+          columns: items(cfg.columns, `${path}.config.columns`),
+          selection: oneOf(cfg.selection, `${path}.config.selection`, ['single', 'multiple'] as const, 'single'),
+          requireEachRow: bool(cfg.requireEachRow, `${path}.config.requireEachRow`, true),
+        },
+        scoring: { enabled: scoringEnabled, correctColumns },
       };
     }
     default:

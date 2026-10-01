@@ -57,8 +57,13 @@ export function createElement(type: ElementType): ExperimentElement {
             { id: createId(), label: 'Option 1' },
             { id: createId(), label: 'Option 2' },
           ],
+          selection: 'single',
+          display: 'buttons',
+          shuffleOptions: false,
+          minSelections: null,
+          maxSelections: null,
         },
-        scoring: { enabled: false, correctOptionId: null },
+        scoring: { enabled: false, correctOptionIds: [] },
       };
     case 'SLIDER_RATING':
       return {
@@ -68,6 +73,7 @@ export function createElement(type: ElementType): ExperimentElement {
         required: true,
         config: {
           prompt: '',
+          display: 'slider',
           min: 1,
           max: 7,
           step: 1,
@@ -84,7 +90,7 @@ export function createElement(type: ElementType): ExperimentElement {
         type,
         role: 'RESPONSE',
         required: true,
-        config: { prompt: '', placeholder: '', multiline: false, minLength: 0, maxLength: null },
+        config: { prompt: '', placeholder: '', multiline: false, minLength: 0, maxLength: null, validation: { kind: 'none' } },
         scoring: { enabled: false, acceptedAnswers: [], caseSensitive: false },
       };
     case 'YES_NO':
@@ -95,6 +101,36 @@ export function createElement(type: ElementType): ExperimentElement {
         required: true,
         config: { prompt: '', yesLabel: 'Yes', noLabel: 'No' },
         scoring: { enabled: false, correctValue: null },
+      };
+    case 'DATE_TIME':
+      return {
+        id,
+        type,
+        role: 'RESPONSE',
+        required: true,
+        config: { prompt: '', mode: 'date' },
+        scoring: { enabled: false, correctValue: null },
+      };
+    case 'CHOICE_GRID':
+      return {
+        id,
+        type,
+        role: 'RESPONSE',
+        required: true,
+        config: {
+          prompt: '',
+          rows: [
+            { id: createId(), label: 'Row 1' },
+            { id: createId(), label: 'Row 2' },
+          ],
+          columns: [
+            { id: createId(), label: 'Column 1' },
+            { id: createId(), label: 'Column 2' },
+          ],
+          selection: 'single',
+          requireEachRow: true,
+        },
+        scoring: { enabled: false, correctColumns: {} },
       };
   }
 }
@@ -114,8 +150,27 @@ export function duplicateElement(element: ExperimentElement): ExperimentElement 
       idMap.set(opt.id, newId);
       return { ...opt, id: newId };
     });
-    const oldCorrect = copy.scoring.correctOptionId;
-    copy.scoring.correctOptionId = oldCorrect ? idMap.get(oldCorrect) ?? null : null;
+    copy.scoring.correctOptionIds = copy.scoring.correctOptionIds.map((id) => idMap.get(id)).filter((id): id is string => !!id);
+  }
+  if (copy.type === 'CHOICE_GRID') {
+    const rowMap = new Map<string, string>();
+    const colMap = new Map<string, string>();
+    copy.config.rows = copy.config.rows.map((r) => {
+      const newId = createId();
+      rowMap.set(r.id, newId);
+      return { ...r, id: newId };
+    });
+    copy.config.columns = copy.config.columns.map((c) => {
+      const newId = createId();
+      colMap.set(c.id, newId);
+      return { ...c, id: newId };
+    });
+    const correct: Record<string, string[]> = {};
+    for (const [rowId, cols] of Object.entries(copy.scoring.correctColumns)) {
+      const newRow = rowMap.get(rowId);
+      if (newRow) correct[newRow] = cols.map((c) => colMap.get(c)).filter((c): c is string => !!c);
+    }
+    copy.scoring.correctColumns = correct;
   }
   return copy;
 }

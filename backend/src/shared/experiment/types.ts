@@ -25,7 +25,9 @@ export type ResponseElementType =
   | 'MULTIPLE_CHOICE'
   | 'SLIDER_RATING'
   | 'TEXT_INPUT'
-  | 'YES_NO';
+  | 'YES_NO'
+  | 'DATE_TIME'
+  | 'CHOICE_GRID';
 export type ElementType = DisplayElementType | ResponseElementType;
 
 export const DISPLAY_ELEMENT_TYPES: readonly DisplayElementType[] = [
@@ -41,6 +43,8 @@ export const RESPONSE_ELEMENT_TYPES: readonly ResponseElementType[] = [
   'SLIDER_RATING',
   'TEXT_INPUT',
   'YES_NO',
+  'DATE_TIME',
+  'CHOICE_GRID',
 ];
 
 export type FixationStyle = '+' | 'dot' | 'circle';
@@ -111,14 +115,36 @@ export interface MultipleChoiceOption {
   label: string;
 }
 
+export type ChoiceSelection = 'single' | 'multiple';
+export type ChoiceDisplay = 'buttons' | 'dropdown';
+
 export interface MultipleChoiceElement {
   id: string;
   type: 'MULTIPLE_CHOICE';
   role: 'RESPONSE';
   required: boolean;
-  config: { prompt: string; options: MultipleChoiceOption[] };
-  scoring: { enabled: boolean; correctOptionId: string | null };
+  config: {
+    prompt: string;
+    options: MultipleChoiceOption[];
+    /** single = radio-style (one answer), multiple = checkboxes (several answers). */
+    selection: ChoiceSelection;
+    /** Dropdown is only available for single selection. */
+    display: ChoiceDisplay;
+    /** Present the options in a random order for each participant (stable within a trial). */
+    shuffleOptions: boolean;
+    /** Multiple selection only: how many boxes must / may be ticked (null = no limit). */
+    minSelections: number | null;
+    maxSelections: number | null;
+  };
+  /**
+   * single: correct when the chosen option is in correctOptionIds (normally exactly one).
+   * multiple: correct when the chosen set equals correctOptionIds exactly.
+   */
+  scoring: { enabled: boolean; correctOptionIds: string[] };
 }
+
+/** slider = continuous range input; scale = a row of numbered buttons (linear scale); stars = star rating. */
+export type ScaleDisplay = 'slider' | 'scale' | 'stars';
 
 export interface SliderRatingElement {
   id: string;
@@ -127,6 +153,7 @@ export interface SliderRatingElement {
   required: boolean;
   config: {
     prompt: string;
+    display: ScaleDisplay;
     min: number;
     max: number;
     step: number;
@@ -151,8 +178,52 @@ export interface TextInputElement {
     multiline: boolean;
     minLength: number;
     maxLength: number | null;
+    /** Response validation like Google Forms: none, a number (optionally within a range), an email, a URL or a pattern. */
+    validation: TextValidation;
   };
   scoring: { enabled: boolean; acceptedAnswers: string[]; caseSensitive: boolean };
+}
+
+export type TextValidation =
+  | { kind: 'none' }
+  | { kind: 'number'; min: number | null; max: number | null; integer: boolean }
+  | { kind: 'email' }
+  | { kind: 'url' }
+  | { kind: 'regex'; pattern: string; message: string };
+
+export type DateTimeMode = 'date' | 'time' | 'datetime';
+
+export interface DateTimeElement {
+  id: string;
+  type: 'DATE_TIME';
+  role: 'RESPONSE';
+  required: boolean;
+  /** Values are ISO-like strings: YYYY-MM-DD, HH:MM or YYYY-MM-DDTHH:MM (participant's local time). */
+  config: { prompt: string; mode: DateTimeMode };
+  scoring: { enabled: boolean; correctValue: string | null };
+}
+
+export interface GridItem {
+  id: string;
+  label: string;
+}
+
+export interface ChoiceGridElement {
+  id: string;
+  type: 'CHOICE_GRID';
+  role: 'RESPONSE';
+  required: boolean;
+  config: {
+    prompt: string;
+    rows: GridItem[];
+    columns: GridItem[];
+    /** single = one column per row (multiple-choice grid), multiple = checkbox grid. */
+    selection: ChoiceSelection;
+    /** When required, every row needs an answer (Google Forms "require a response in each row"). */
+    requireEachRow: boolean;
+  };
+  /** Per row, the correct column ids (one for single selection, an exact set for multiple). Rows without an entry are not scored. */
+  scoring: { enabled: boolean; correctColumns: Record<string, string[]> };
 }
 
 export interface YesNoElement {
@@ -171,7 +242,9 @@ export type ResponseElement =
   | MultipleChoiceElement
   | SliderRatingElement
   | TextInputElement
-  | YesNoElement;
+  | YesNoElement
+  | DateTimeElement
+  | ChoiceGridElement;
 export type ScorableElement = Exclude<ResponseElement, MouseClickElement>;
 export type ExperimentElement = DisplayElement | ResponseElement;
 
@@ -212,7 +285,11 @@ export interface MouseClickValue {
   y: number;
 }
 
-export type ResponseValue = string | number | boolean | MouseClickValue;
+/** Grid answers: row id -> chosen column ids. */
+export type GridValue = Record<string, string[]>;
+
+/** string: key, single option id, text, date/time. string[]: multiple option ids. */
+export type ResponseValue = string | number | boolean | string[] | MouseClickValue | GridValue;
 
 export interface ElementResponse {
   elementId: string;

@@ -203,7 +203,7 @@ export default function ParticipantRunPage() {
   if (phase.kind === 'running' && run) {
     return (
       <>
-        <ExperimentRunner definition={run.definition} order={run.order} startPosition={run.startPosition} assets={cache} onTrialComplete={onTrialComplete} onFinished={onFinished} />
+        <ExperimentRunner definition={run.definition} order={run.order} startPosition={run.startPosition} assets={cache} seed={run.sessionId} onTrialComplete={onTrialComplete} onFinished={onFinished} />
         {outboxStatus?.fatal && (
           <div role="alert" className="fixed bottom-3 left-1/2 -translate-x-1/2 z-[60] bg-red-600 text-white text-sm px-4 py-2 rounded-lg shadow">
             Your responses could not be saved: {outboxStatus.lastError}

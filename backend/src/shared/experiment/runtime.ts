@@ -13,9 +13,23 @@ import type {
 } from './types';
 import { isResponseElement } from './types';
 
-/** Slider and text responses change continuously, so they are committed with an explicit Submit. */
+/**
+ * Answers that are built up or edited before they are final (sliders, scales, text,
+ * dates, grids, checkboxes, dropdowns) are committed with an explicit Submit.
+ * Single-choice buttons, Yes/No, keys and clicks are instant.
+ */
 export function isDeferredResponseElement(el: ExperimentElement): boolean {
-  return el.type === 'SLIDER_RATING' || el.type === 'TEXT_INPUT';
+  switch (el.type) {
+    case 'SLIDER_RATING':
+    case 'TEXT_INPUT':
+    case 'DATE_TIME':
+    case 'CHOICE_GRID':
+      return true;
+    case 'MULTIPLE_CHOICE':
+      return el.config.selection === 'multiple' || el.config.display === 'dropdown';
+    default:
+      return false;
+  }
 }
 
 export function getResponseElements(trial: Trial): ResponseElement[] {
@@ -60,12 +74,87 @@ function snapToStep(value: number, min: number, step: number): number {
   return Number(snapped.toFixed(10));
 }
 
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const DATE_RE = /^(\d{4})-(\d{2})-(\d{2})$/;
+const TIME_RE = /^([01]\d|2[0-3]):([0-5]\d)$/;
+
+function validDate(v: string): boolean {
+  const m = DATE_RE.exec(v);
+  if (!m) return false;
+  const d = new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3])));
+  return d.getUTCFullYear() === Number(m[1]) && d.getUTCMonth() === Number(m[2]) - 1 && d.getUTCDate() === Number(m[3]);
+}
+
+export function isValidDateTimeValue(mode: 'date' | 'time' | 'datetime', v: string): boolean {
+  if (mode === 'date') return validDate(v);
+  if (mode === 'time') return TIME_RE.test(v);
+  const [d, t] = v.split('T');
+  return !!d && !!t && validDate(d) && TIME_RE.test(t);
+}
+
+export interface CoerceOptions {
+  /**
+   * Skip researcher-defined regular expressions. The server sets this: an arbitrary
+   * pattern could backtrack catastrophically and stall the API, so pattern rules are
+   * enforced in the participant's browser only.
+   */
+  skipPatternCheck?: boolean;
+}
+
+/** Applies a text answer's response-validation rule; returns an error message or null. */
+export function checkTextValidation(el: Extract<ExperimentElement, { type: 'TEXT_INPUT' }>, value: string, options: CoerceOptions = {}): string | null {
+  const rule = el.config.validation;
+  switch (rule.kind) {
+    case 'none':
+      return null;
+    case 'number': {
+      const n = Number(value.replace(',', '.'));
+      if (value.trim() === '' || !Number.isFinite(n)) return 'enter a number';
+      if (rule.integer && !Number.isInteger(n)) return 'enter a whole number';
+      if (rule.min !== null && n < rule.min) return `enter a number of at least ${rule.min}`;
+      if (rule.max !== null && n > rule.max) return `enter a number of at most ${rule.max}`;
+      return null;
+    }
+    case 'email':
+      return EMAIL_RE.test(value) ? null : 'enter a valid email address';
+    case 'url':
+      try {
+        const u = new URL(value);
+        return u.protocol === 'http:' || u.protocol === 'https:' ? null : 'enter a web address starting with http:// or https://';
+      } catch {
+        return 'enter a web address starting with http:// or https://';
+      }
+    case 'regex': {
+      if (options.skipPatternCheck || !rule.pattern) return null;
+      let re: RegExp;
+      try {
+        re = new RegExp(`^(?:${rule.pattern})$`);
+      } catch {
+        return null; // An invalid pattern is reported to the researcher by validation, not to participants.
+      }
+      return re.test(value) ? null : rule.message.trim() || 'answer does not have the required format';
+    }
+  }
+}
+
+/** Option order shown to a participant: deterministic per seed so it can be reproduced from the session id. */
+export function orderedOptions<T extends { id: string }>(items: readonly T[], shuffle: boolean, seed: string): T[] {
+  const out = items.slice();
+  if (!shuffle) return out;
+  const rand = mulberry32(hashSeed(seed));
+  for (let i = out.length - 1; i > 0; i--) {
+    const j = Math.floor(rand() * (i + 1));
+    [out[i], out[j]] = [out[j], out[i]];
+  }
+  return out;
+}
+
 /**
  * Validates and normalizes a raw response value for an element. Used by the client
  * before recording and by the server before storing, so invalid values never reach
  * the data set.
  */
-export function coerceResponseValue(el: ExperimentElement, raw: unknown): CoerceResult {
+export function coerceResponseValue(el: ExperimentElement, raw: unknown, options: CoerceOptions = {}): CoerceResult {
   switch (el.type) {
     case 'KEYBOARD_PRESS': {
       if (typeof raw !== 'string' || raw.length === 0) return { ok: false, error: 'key must be a string' };
@@ -90,9 +179,21 @@ export function coerceResponseValue(el: ExperimentElement, raw: unknown): Coerce
       return { ok: true, value, display: `(${value.x}, ${value.y})` };
     }
     case 'MULTIPLE_CHOICE': {
-      const opt = el.config.options.find((o) => o.id === raw);
-      if (!opt) return { ok: false, error: 'unknown option' };
-      return { ok: true, value: opt.id, display: opt.label };
+      if (el.config.selection === 'single') {
+        const opt = el.config.options.find((o) => o.id === raw);
+        if (!opt) return { ok: false, error: 'unknown option' };
+        return { ok: true, value: opt.id, display: opt.label };
+      }
+      if (!Array.isArray(raw) || raw.some((v) => typeof v !== 'string')) return { ok: false, error: 'selection must be a list of option ids' };
+      const chosen = new Set(raw as string[]);
+      if (chosen.size === 0) return { ok: false, error: 'select at least one option' };
+      // Keep the configured option order so identical answers always compare equal.
+      const ordered = el.config.options.filter((o) => chosen.has(o.id));
+      if (ordered.length !== chosen.size) return { ok: false, error: 'unknown option' };
+      const { minSelections, maxSelections } = el.config;
+      if (minSelections !== null && ordered.length < minSelections) return { ok: false, error: `select at least ${minSelections} options` };
+      if (maxSelections !== null && ordered.length > maxSelections) return { ok: false, error: `select at most ${maxSelections} options` };
+      return { ok: true, value: ordered.map((o) => o.id), display: ordered.map((o) => o.label).join('; ') };
     }
     case 'SLIDER_RATING': {
       const { min, max, step } = el.config;
@@ -109,11 +210,44 @@ export function coerceResponseValue(el: ExperimentElement, raw: unknown): Coerce
       if (el.config.maxLength !== null && value.length > el.config.maxLength) {
         return { ok: false, error: `text must be at most ${el.config.maxLength} characters` };
       }
+      const invalid = checkTextValidation(el, value, options);
+      if (invalid) return { ok: false, error: invalid };
       return { ok: true, value, display: value };
     }
     case 'YES_NO': {
       if (typeof raw !== 'boolean') return { ok: false, error: 'yes/no response must be a boolean' };
       return { ok: true, value: raw, display: raw ? el.config.yesLabel : el.config.noLabel };
+    }
+    case 'DATE_TIME': {
+      if (typeof raw !== 'string' || !isValidDateTimeValue(el.config.mode, raw)) {
+        const format = el.config.mode === 'date' ? 'YYYY-MM-DD' : el.config.mode === 'time' ? 'HH:MM' : 'YYYY-MM-DDTHH:MM';
+        return { ok: false, error: `enter a valid ${el.config.mode} (${format})` };
+      }
+      return { ok: true, value: raw, display: raw.replace('T', ' ') };
+    }
+    case 'CHOICE_GRID': {
+      if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return { ok: false, error: 'grid answer must map rows to columns' };
+      const input = raw as Record<string, unknown>;
+      if (Object.keys(input).some((rowId) => !el.config.rows.some((r) => r.id === rowId))) return { ok: false, error: 'unknown row' };
+      const value: Record<string, string[]> = {};
+      const parts: string[] = [];
+      for (const row of el.config.rows) {
+        const cols = input[row.id];
+        if (cols === undefined) continue;
+        if (!Array.isArray(cols) || cols.some((c) => typeof c !== 'string')) return { ok: false, error: 'grid answer must map rows to columns' };
+        const wanted = new Set(cols as string[]);
+        const chosen = el.config.columns.filter((c) => wanted.has(c.id));
+        if (chosen.length !== wanted.size) return { ok: false, error: 'unknown column' };
+        if (chosen.length === 0) continue;
+        if (el.config.selection === 'single' && chosen.length > 1) return { ok: false, error: 'choose one answer per row' };
+        value[row.id] = chosen.map((c) => c.id);
+        parts.push(`${row.label}: ${chosen.map((c) => c.label).join(', ')}`);
+      }
+      if (Object.keys(value).length === 0) return { ok: false, error: 'answer at least one row' };
+      if (el.required && el.config.requireEachRow && Object.keys(value).length < el.config.rows.length) {
+        return { ok: false, error: 'answer every row' };
+      }
+      return { ok: true, value, display: parts.join('; ') };
     }
     default:
       return { ok: false, error: `${el.type} does not accept responses` };
@@ -170,7 +304,11 @@ export function redactForParticipant(def: ExperimentDefinition): ExperimentDefin
           case 'KEYBOARD_PRESS':
             return { ...el, scoring: { enabled: false, correctKey: null } };
           case 'MULTIPLE_CHOICE':
-            return { ...el, scoring: { enabled: false, correctOptionId: null } };
+            return { ...el, scoring: { enabled: false, correctOptionIds: [] } };
+          case 'DATE_TIME':
+            return { ...el, scoring: { enabled: false, correctValue: null } };
+          case 'CHOICE_GRID':
+            return { ...el, scoring: { enabled: false, correctColumns: {} } };
           case 'SLIDER_RATING':
             return { ...el, scoring: { enabled: false, correctMin: null, correctMax: null } };
           case 'TEXT_INPUT':

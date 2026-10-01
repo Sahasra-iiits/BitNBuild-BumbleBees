@@ -265,7 +265,7 @@ export class SessionService {
       if (!Number.isFinite(raw.rtMs) || raw.rtMs < 0 || raw.rtMs > MAX_RT_MS) {
         throw new ValidationError(`${where}.elements[${j}]: invalid rtMs`);
       }
-      const coerced = coerceResponseValue(element, raw.value);
+      const coerced = coerceResponseValue(element, raw.value, { skipPatternCheck: true });
       if (!coerced.ok) throw new ValidationError(`${where}.elements[${j}]: ${coerced.error}`);
       values.set(element.id, coerced.value);
       elements.push({ elementId: element.id, type: element.type, value: coerced.value, display: coerced.display, rtMs: raw.rtMs });

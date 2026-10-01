@@ -3,7 +3,7 @@
 // every reference to it.
 
 import { createElement, createTrial, duplicateElement, duplicateTrial } from './factory';
-import type { ElementType, ExperimentDefinition, ExperimentElement, MultipleChoiceElement, Trial } from './types';
+import type { ChoiceGridElement, ElementType, ExperimentDefinition, ExperimentElement, MultipleChoiceElement, Trial } from './types';
 
 function mapTrial(def: ExperimentDefinition, trialId: string, fn: (t: Trial) => Trial): ExperimentDefinition {
   let changed = false;
@@ -105,13 +105,46 @@ export function moveElement(def: ExperimentDefinition, trialId: string, elementI
   });
 }
 
-/** Removes an option; if it was the correct answer, the correct answer is cleared (never reassigned). */
+/** Removes an option; if it was a correct answer it is removed from the answers too (never reassigned). */
 export function removeChoiceOption(el: MultipleChoiceElement, optionId: string): MultipleChoiceElement {
   return {
     ...el,
     config: { ...el.config, options: el.config.options.filter((o) => o.id !== optionId) },
-    scoring: el.scoring.correctOptionId === optionId ? { ...el.scoring, correctOptionId: null } : el.scoring,
+    scoring: el.scoring.correctOptionIds.includes(optionId)
+      ? { ...el.scoring, correctOptionIds: el.scoring.correctOptionIds.filter((id) => id !== optionId) }
+      : el.scoring,
   };
+}
+
+/** Switches between single and multiple selection, keeping only answers valid for the new mode. */
+export function setChoiceSelection(el: MultipleChoiceElement, selection: MultipleChoiceElement['config']['selection']): MultipleChoiceElement {
+  if (el.config.selection === selection) return el;
+  return {
+    ...el,
+    config: {
+      ...el.config,
+      selection,
+      // Dropdowns only exist for single selection; selection limits only for multiple.
+      display: selection === 'multiple' ? 'buttons' : el.config.display,
+      minSelections: selection === 'multiple' ? el.config.minSelections : null,
+      maxSelections: selection === 'multiple' ? el.config.maxSelections : null,
+    },
+    scoring: selection === 'single' && el.scoring.correctOptionIds.length > 1 ? { ...el.scoring, correctOptionIds: el.scoring.correctOptionIds.slice(0, 1) } : el.scoring,
+  };
+}
+
+/** Removes a grid row and its correct answer. */
+export function removeGridRow(el: ChoiceGridElement, rowId: string): ChoiceGridElement {
+  const correctColumns = { ...el.scoring.correctColumns };
+  delete correctColumns[rowId];
+  return { ...el, config: { ...el.config, rows: el.config.rows.filter((r) => r.id !== rowId) }, scoring: { ...el.scoring, correctColumns } };
+}
+
+/** Removes a grid column and every correct answer that pointed at it. */
+export function removeGridColumn(el: ChoiceGridElement, columnId: string): ChoiceGridElement {
+  const correctColumns: Record<string, string[]> = {};
+  for (const [rowId, cols] of Object.entries(el.scoring.correctColumns)) correctColumns[rowId] = cols.filter((c) => c !== columnId);
+  return { ...el, config: { ...el.config, columns: el.config.columns.filter((c) => c.id !== columnId) }, scoring: { ...el.scoring, correctColumns } };
 }
 
 /** Removes an allowed key and clears the correct key if it was that key. */

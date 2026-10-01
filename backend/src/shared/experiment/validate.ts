@@ -4,6 +4,7 @@
 // publish page and on the server when publishing.
 
 import { displayKey, isAssignableResponseKey } from './keys';
+import { checkTextValidation, isValidDateTimeValue } from './runtime';
 import type {
   ExperimentDefinition,
   ExperimentElement,
@@ -123,11 +124,36 @@ function validateElement(c: IssueCollector, el: ExperimentElement, trial: Trial,
         if (norm && labels.has(norm)) c.add('warning', 'mc_duplicate_label', `Option label "${o.label.trim()}" appears more than once.`, trial.id, el.id);
         labels.add(norm);
       }
+      const { selection, minSelections, maxSelections } = el.config;
+      if (selection === 'multiple') {
+        if (minSelections !== null && (!Number.isInteger(minSelections) || minSelections < 1)) {
+          c.add('error', 'mc_min_selections', 'Minimum selections must be a whole number of 1 or more.', trial.id, el.id);
+        }
+        if (maxSelections !== null && (!Number.isInteger(maxSelections) || maxSelections < 1)) {
+          c.add('error', 'mc_max_selections', 'Maximum selections must be a whole number of 1 or more.', trial.id, el.id);
+        }
+        if (minSelections !== null && maxSelections !== null && minSelections > maxSelections) {
+          c.add('error', 'mc_selection_range', 'Minimum selections is above maximum selections.', trial.id, el.id);
+        }
+        if (minSelections !== null && minSelections > opts.length) {
+          c.add('error', 'mc_min_above_options', 'Minimum selections is larger than the number of options.', trial.id, el.id);
+        }
+      }
       if (el.scoring.enabled) {
-        if (!el.scoring.correctOptionId) {
+        const correct = el.scoring.correctOptionIds;
+        if (correct.length === 0) {
           c.add('error', 'mc_no_correct_option', 'Scoring is on but no correct option is selected.', trial.id, el.id);
-        } else if (!ids.has(el.scoring.correctOptionId)) {
-          c.add('error', 'mc_correct_option_missing', 'The correct option was deleted. Select a new correct option.', trial.id, el.id);
+        } else if (correct.some((id) => !ids.has(id))) {
+          c.add('error', 'mc_correct_option_missing', 'A correct option was deleted. Select the correct option(s) again.', trial.id, el.id);
+        } else if (selection === 'single' && correct.length > 1) {
+          c.add('error', 'mc_single_many_correct', 'Single-choice questions can have only one correct option.', trial.id, el.id);
+        } else if (selection === 'multiple') {
+          if (minSelections !== null && correct.length < minSelections) {
+            c.add('error', 'mc_correct_below_min', 'The correct answer selects fewer options than the minimum allowed.', trial.id, el.id);
+          }
+          if (maxSelections !== null && correct.length > maxSelections) {
+            c.add('error', 'mc_correct_above_max', 'The correct answer selects more options than the maximum allowed.', trial.id, el.id);
+          }
         }
       }
       break;
@@ -145,6 +171,12 @@ function validateElement(c: IssueCollector, el: ExperimentElement, trial: Trial,
       } else if (rangeValid && step > max - min) {
         c.add('error', 'slider_step_too_large', 'Slider step is larger than the slider range.', trial.id, el.id);
         rangeValid = false;
+      }
+      if (el.config.display !== 'slider' && rangeValid) {
+        const points = Math.round((max - min) / step) + 1;
+        if (!Number.isInteger(min) || !Number.isInteger(step) || points > 11) {
+          c.add('error', 'scale_points', 'Linear scales and star ratings need whole-number steps and at most 11 points (e.g. 1–5, 0–10).', trial.id, el.id);
+        }
       }
       if (rangeValid) {
         if (defaultValue < min || defaultValue > max) {
@@ -178,6 +210,30 @@ function validateElement(c: IssueCollector, el: ExperimentElement, trial: Trial,
       } else if (maxLength !== null && maxLength < minLength) {
         c.add('error', 'text_length_order', 'Maximum length is smaller than minimum length.', trial.id, el.id);
       }
+      const rule = el.config.validation;
+      if (rule.kind === 'number' && rule.min !== null && rule.max !== null && rule.min > rule.max) {
+        c.add('error', 'text_number_range', 'Number validation: minimum is above maximum.', trial.id, el.id);
+      }
+      if (rule.kind === 'regex') {
+        if (!rule.pattern.trim()) {
+          c.add('error', 'text_regex_empty', 'Pattern validation is on but no pattern is set.', trial.id, el.id);
+        } else {
+          try {
+            new RegExp(rule.pattern);
+          } catch {
+            c.add('error', 'text_regex_invalid', 'The validation pattern is not a valid regular expression.', trial.id, el.id);
+          }
+          c.add('info', 'text_regex_client', 'Pattern validation is checked in the participant’s browser.', trial.id, el.id);
+        }
+      }
+      if (el.scoring.enabled && rule.kind !== 'none' && rule.kind !== 'regex') {
+        for (const a of el.scoring.acceptedAnswers.filter((x) => x.trim())) {
+          const probe = { ...el, config: { ...el.config, minLength: 0, maxLength: null } };
+          if (checkTextValidation(probe, a.trim())) {
+            c.add('warning', 'text_answer_fails_validation', `Accepted answer "${a.trim()}" would be rejected by the response validation.`, trial.id, el.id);
+          }
+        }
+      }
       if (!el.required && minLength > 0) {
         c.add('info', 'text_optional_min', 'Minimum length only applies when the participant types something.', trial.id, el.id);
       }
@@ -185,6 +241,33 @@ function validateElement(c: IssueCollector, el: ExperimentElement, trial: Trial,
         const answers = el.scoring.acceptedAnswers.filter((a) => a.trim().length > 0);
         if (answers.length === 0) {
           c.add('error', 'text_no_answers', 'Scoring is on but no accepted answers are listed.', trial.id, el.id);
+        }
+      }
+      break;
+    }
+    case 'DATE_TIME':
+      if (el.scoring.enabled) {
+        if (el.scoring.correctValue === null) {
+          c.add('error', 'datetime_no_correct', 'Scoring is on but the correct date/time is not set.', trial.id, el.id);
+        } else if (!isValidDateTimeValue(el.config.mode, el.scoring.correctValue)) {
+          c.add('error', 'datetime_correct_format', 'The correct answer does not match the question type (date, time or date and time).', trial.id, el.id);
+        }
+      }
+      break;
+    case 'CHOICE_GRID': {
+      const { rows, columns } = el.config;
+      if (rows.length < 1) c.add('error', 'grid_no_rows', 'The grid needs at least one row.', trial.id, el.id);
+      if (columns.length < 2) c.add('error', 'grid_few_columns', 'The grid needs at least two columns.', trial.id, el.id);
+      if ([...rows, ...columns].some((x) => !x.label.trim())) c.add('error', 'grid_empty_label', 'Every grid row and column needs a label.', trial.id, el.id);
+      const rowIds = new Set(rows.map((r) => r.id));
+      const colIds = new Set(columns.map((x) => x.id));
+      if (rowIds.size !== rows.length || colIds.size !== columns.length) c.add('error', 'grid_duplicate_ids', 'The grid has duplicate row or column ids.', trial.id, el.id);
+      if (el.scoring.enabled) {
+        const scored = Object.entries(el.scoring.correctColumns).filter(([rowId, cols]) => rowIds.has(rowId) && cols.length > 0);
+        if (scored.length === 0) c.add('error', 'grid_no_correct', 'Scoring is on but no correct answers are set for any row.', trial.id, el.id);
+        if (scored.some(([, cols]) => cols.some((x) => !colIds.has(x)))) c.add('error', 'grid_correct_missing', 'A correct answer points to a deleted column.', trial.id, el.id);
+        if (el.config.selection === 'single' && scored.some(([, cols]) => cols.length > 1)) {
+          c.add('error', 'grid_single_many_correct', 'A multiple-choice grid row can only have one correct column.', trial.id, el.id);
         }
       }
       break;

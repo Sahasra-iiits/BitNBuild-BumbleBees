@@ -2,9 +2,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useParams, useRouter } from 'next/navigation';
-import { AlertTriangle, ArrowDown, ArrowLeft, ArrowUp, Check, Copy, Loader2, Play, Plus, Rocket, Trash2 } from 'lucide-react';
+import { AlertTriangle, ArrowDown, ArrowLeft, ArrowUp, Check, Copy, FileUp, Loader2, Play, Plus, Rocket, Trash2 } from 'lucide-react';
 import {
-  addElement,
   addTrial,
   deleteElement,
   deleteTrial,
@@ -16,9 +15,9 @@ import {
   updateTrial,
   validateDefinition,
   countBySeverity,
+  createElement,
   ADVANCE_MODES,
   type AdvanceMode,
-  type ElementType,
   type ExperimentElement,
   type Trial,
   type ValidationIssue,
@@ -31,6 +30,8 @@ import { errorMessage } from '@/lib/api/client';
 import { MediaEditor } from '@/components/experiment/builder/MediaEditor';
 import {
   ChoiceEditor,
+  DateTimeEditor,
+  GridEditor,
   FixationEditor,
   KeyboardEditor,
   MouseClickEditor,
@@ -41,7 +42,8 @@ import {
 } from '@/components/experiment/builder/ElementEditors';
 import { IssueList } from '@/components/experiment/builder/IssueList';
 import { NumberField, TextField, Toggle, Field, inputClass } from '@/components/experiment/builder/fields';
-import { ADVANCE_MODE_HELP, ADVANCE_MODE_LABEL, ELEMENT_META, RESPONSE_TYPES, STIMULUS_TYPES } from '@/components/experiment/builder/element-meta';
+import { ADVANCE_MODE_HELP, ADVANCE_MODE_LABEL, elementLabel, RESPONSE_PRESETS, STIMULUS_PRESETS, type ElementPreset } from '@/components/experiment/builder/element-meta';
+import { ImportQuestionsDialog } from '@/components/experiment/builder/ImportQuestionsDialog';
 
 function SaveIndicator({ state, error, lastSavedAt, onRetry }: { state: SaveState; error: string | null; lastSavedAt: Date | null; onRetry: () => void }) {
   if (state === 'saving' || state === 'pending') {
@@ -79,6 +81,8 @@ export default function BuilderPage() {
   const [navigating, setNavigating] = useState<string | null>(null);
   const [navError, setNavError] = useState<string | null>(null);
   const [migration, setMigration] = useState<{ total: number; done: number; failed: number } | null>(null);
+  const [importOpen, setImportOpen] = useState(false);
+  const [importNotice, setImportNotice] = useState<string | null>(null);
   const migrationStarted = useRef(false);
 
   const cache = useMemo(() => new AssetCache(), []);
@@ -194,6 +198,28 @@ export default function BuilderPage() {
     setSelectedTrialId(neighbour?.id ?? null);
   };
 
+  /** Adds a preset (e.g. Checkboxes = multiple choice with multiple selection) to a trial. */
+  const addPreset = (trialId: string, p: ElementPreset) => {
+    const el = createElement(p.type);
+    const configured = p.configure ? p.configure(el) : el;
+    update((d) => ({ ...d, trials: d.trials.map((t) => (t.id === trialId ? { ...t, elements: [...t.elements, configured] } : t)) }));
+  };
+
+  const onImportTrials = (trials: Trial[]) => {
+    if (trials.length === 0) return;
+    // Imported questions go after the selected trial (or at the end when none is selected).
+    update((d) => {
+      const index = selectedTrial ? d.trials.findIndex((t) => t.id === selectedTrial.id) : -1;
+      const next = d.trials.slice();
+      next.splice(index === -1 ? next.length : index + 1, 0, ...trials);
+      return { ...d, trials: next };
+    });
+    // Selecting the last imported trial makes a following import or "Add trial" continue after it.
+    setSelectedTrialId(trials[trials.length - 1].id);
+    setImportOpen(false);
+    setImportNotice(`Added ${trials.length} question trial${trials.length === 1 ? '' : 's'}.`);
+  };
+
   const selectIssue = (issue: ValidationIssue) => {
     if (issue.trialId) setSelectedTrialId(issue.trialId);
     if (issue.elementId) {
@@ -214,6 +240,13 @@ export default function BuilderPage() {
           <SaveIndicator state={editor.saveState} error={editor.saveError} lastSavedAt={editor.lastSavedAt} onRetry={() => void editor.saveNow()} />
         </div>
         <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setImportOpen(true)}
+            className="inline-flex items-center gap-1.5 px-3 py-2 rounded-md border bg-white text-sm font-medium hover:bg-slate-50"
+          >
+            <FileUp className="w-4 h-4" /> Import questions
+          </button>
           <span className="text-xs text-slate-500 hidden sm:inline">
             {definition.trials.length} trial{definition.trials.length === 1 ? '' : 's'} · <span className={counts.error ? 'text-red-600 font-medium' : ''}>{counts.error} error{counts.error === 1 ? '' : 's'}</span> ·{' '}
             <span className={counts.warning ? 'text-amber-700' : ''}>{counts.warning} warning{counts.warning === 1 ? '' : 's'}</span>
@@ -240,6 +273,14 @@ export default function BuilderPage() {
       {/* Banners */}
       <div className="shrink-0 space-y-px">
         {navError && <div className="bg-red-50 text-red-700 text-sm px-6 py-2">{navError}</div>}
+        {importNotice && (
+          <div className="bg-emerald-50 border-b border-emerald-200 text-emerald-900 text-sm px-6 py-2 flex items-center gap-3" role="status">
+            {importNotice}
+            <button type="button" onClick={() => setImportNotice(null)} className="underline">
+              Dismiss
+            </button>
+          </div>
+        )}
         {editor.saveState === 'conflict' && (
           <div className="bg-red-50 border-b border-red-200 text-red-800 text-sm px-6 py-2 flex flex-wrap items-center gap-3">
             <AlertTriangle className="w-4 h-4" /> This experiment was saved from another tab or session. Your latest edits are not saved.
@@ -323,7 +364,7 @@ export default function BuilderPage() {
                     <div className="border-t px-4 py-4 space-y-4">
                       {trial.elements.length === 0 && <p className="text-sm text-slate-500 text-center py-4">This trial is empty. Add a stimulus or a response below.</p>}
                       {trial.elements.map((el, elIndex) => {
-                        const meta = ELEMENT_META[el.type];
+                        const meta = elementLabel(el);
                         const Icon = meta.icon;
                         const elIssues = tIssues.filter((i) => i.elementId === el.id);
                         return (
@@ -366,8 +407,8 @@ export default function BuilderPage() {
                       })}
 
                       <div className="grid sm:grid-cols-2 gap-4 pt-2 border-t">
-                        <AddElementGroup title="Add stimulus" types={STIMULUS_TYPES} onAdd={(type) => update((d) => addElement(d, trial.id, type).definition)} />
-                        <AddElementGroup title="Add response" types={RESPONSE_TYPES} onAdd={(type) => update((d) => addElement(d, trial.id, type).definition)} />
+                        <AddElementGroup title="Add stimulus" presets={STIMULUS_PRESETS} onAdd={(p) => addPreset(trial.id, p)} />
+                        <AddElementGroup title="Add question / response" presets={RESPONSE_PRESETS} onAdd={(p) => addPreset(trial.id, p)} />
                       </div>
                     </div>
                   )}
@@ -409,21 +450,21 @@ export default function BuilderPage() {
           </div>
         </aside>
       </div>
+      {importOpen && <ImportQuestionsDialog onClose={() => setImportOpen(false)} onImport={onImportTrials} startNumber={definition.trials.length + 1} />}
     </div>
   );
 }
 
-function AddElementGroup({ title, types, onAdd }: { title: string; types: ElementType[]; onAdd: (type: ElementType) => void }) {
+function AddElementGroup({ title, presets, onAdd }: { title: string; presets: ElementPreset[]; onAdd: (p: ElementPreset) => void }) {
   return (
     <div>
       <h3 className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">{title}</h3>
       <div className="flex flex-wrap gap-2">
-        {types.map((type) => {
-          const meta = ELEMENT_META[type];
-          const Icon = meta.icon;
+        {presets.map((p) => {
+          const Icon = p.icon;
           return (
-            <button key={type} type="button" title={meta.description} onClick={() => onAdd(type)} className="inline-flex items-center gap-1.5 px-2.5 py-1.5 border border-slate-200 rounded-md text-xs text-slate-700 bg-white hover:border-blue-300 hover:bg-slate-50">
-              <Icon className="w-3.5 h-3.5" /> {meta.label}
+            <button key={p.key} type="button" title={p.description} onClick={() => onAdd(p)} className="inline-flex items-center gap-1.5 px-2.5 py-1.5 border border-slate-200 rounded-md text-xs text-slate-700 bg-white hover:border-blue-300 hover:bg-slate-50">
+              <Icon className="w-3.5 h-3.5" /> {p.label}
             </button>
           );
         })}
@@ -464,6 +505,10 @@ function ElementEditor({ element, edit, experimentId, cache }: { element: Experi
       return <TextInputEditor element={element} edit={typed('TEXT_INPUT')} />;
     case 'YES_NO':
       return <YesNoEditor element={element} edit={typed('YES_NO')} />;
+    case 'DATE_TIME':
+      return <DateTimeEditor element={element} edit={typed('DATE_TIME')} />;
+    case 'CHOICE_GRID':
+      return <GridEditor element={element} edit={typed('CHOICE_GRID')} />;
   }
 }
 

@@ -34,14 +34,12 @@ import {
   type ExperimentElement,
   type KeyboardPressElement,
   type ResponseElement,
-  type SliderRatingElement,
-  type TextInputElement,
   type Trial,
   type TrialResponsePayload,
 } from '@/shared/experiment';
 import { mediaSrc, type AssetCache } from '@/lib/experiment/asset-cache';
 import { AudioStimulus, FixationStimulus, ImageStimulus, TextStimulus } from './stimuli';
-import { ChoiceInput, KeyboardPrompt, SliderInput, TextAnswerInput, YesNoInput } from './responses';
+import { ChoiceInput, DateTimeInput, GridInput, KeyboardPrompt, SliderInput, TextAnswerInput, YesNoInput } from './responses';
 
 export interface TrialRecord {
   trial: Trial;
@@ -62,6 +60,8 @@ export interface ExperimentRunnerProps {
   assets: AssetCache;
   onTrialComplete: (record: TrialRecord) => void;
   onFinished: () => void;
+  /** Seeds per-participant option shuffling (the session id), so the order can be reproduced. */
+  seed?: string;
   /** Researcher-only overlay; never rendered for participants. */
   Overlay?: React.ComponentType<RunnerOverlayProps>;
 }
@@ -74,7 +74,7 @@ export interface RunnerOverlayProps {
   onSkip: () => void;
 }
 
-export default function ExperimentRunner({ definition, order, startPosition = 0, assets, onTrialComplete, onFinished, Overlay }: ExperimentRunnerProps) {
+export default function ExperimentRunner({ definition, order, startPosition = 0, assets, onTrialComplete, onFinished, seed = '', Overlay }: ExperimentRunnerProps) {
   const [position, setPosition] = useState(startPosition);
   const positionRef = useRef(startPosition);
   const finishedRef = useRef(false);
@@ -115,7 +115,7 @@ export default function ExperimentRunner({ definition, order, startPosition = 0,
 
   return (
     <div className="fixed inset-0 z-50 bg-white text-slate-900 overflow-hidden">
-      <TrialScreen key={`${position}:${trial.id}`} trial={trial} position={position} total={order.length} assets={assets} onEnd={handleTrialEnd} />
+      <TrialScreen key={`${position}:${trial.id}`} trial={trial} position={position} total={order.length} assets={assets} seed={seed} onEnd={handleTrialEnd} />
       {Overlay && <Overlay position={position} total={order.length} trial={trial} onSkip={skip} />}
     </div>
   );
@@ -125,24 +125,32 @@ export default function ExperimentRunner({ definition, order, startPosition = 0,
 // Single trial
 // =============================================================================
 
+/** Answer being edited for a Submit/Continue trial (sliders, text, checkboxes, dropdowns, dates, grids). */
 interface DeferredDraft {
   slider?: number;
   touched?: boolean;
   text?: string;
+  choice?: string[];
+  date?: string;
+  grid?: Record<string, string[]>;
   changedAt?: number;
 }
+
+const sentence = (msg: string) => msg.charAt(0).toUpperCase() + msg.slice(1) + (msg.endsWith('.') ? '' : '.');
 
 function TrialScreen({
   trial,
   position,
   total,
   assets,
+  seed,
   onEnd,
 }: {
   trial: Trial;
   position: number;
   total: number;
   assets: AssetCache;
+  seed: string;
   onEnd: (record: TrialRecord) => void;
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -237,34 +245,68 @@ function TrialScreen({
   );
 
   /**
-   * Commits slider/text drafts. In strict mode (Submit/Continue) invalid or missing
+   * Commits deferred answers. In strict mode (Submit/Continue) invalid or missing
    * required answers produce errors and block; on timeout only valid answers are kept.
    */
   const commitDeferred = useCallback(
     (strict: boolean): boolean => {
       const onset = onsetRef.current ?? performance.now();
       const nextErrors: Record<string, string> = {};
+      const commit = (el: ResponseElement, raw: unknown, changedAt: number | undefined) => {
+        const coerced = coerceResponseValue(el, raw);
+        if (coerced.ok) store(el, coerced.value, coerced.display, (changedAt ?? performance.now()) - onset);
+        else nextErrors[el.id] = sentence(coerced.error);
+      };
       for (const el of trial.elements) {
         if (!isDeferredResponseElement(el) || el.role !== 'RESPONSE') continue;
         const draft = draftsRef.current[el.id] ?? {};
-        if (el.type === 'SLIDER_RATING') {
-          const interacted = !!draft.touched || !el.config.requireInteraction;
-          if (!interacted) {
-            if (el.required) nextErrors[el.id] = 'Please move the slider to give your answer.';
-            continue;
+        switch (el.type) {
+          case 'SLIDER_RATING': {
+            const interacted = !!draft.touched || !el.config.requireInteraction;
+            if (!interacted) {
+              if (el.required) nextErrors[el.id] = el.config.display === 'slider' ? 'Please move the slider to give your answer.' : 'Please choose a rating.';
+              continue;
+            }
+            commit(el, draft.slider ?? el.config.defaultValue, draft.changedAt);
+            break;
           }
-          const coerced = coerceResponseValue(el, draft.slider ?? el.config.defaultValue);
-          if (coerced.ok) store(el, coerced.value, coerced.display, (draft.changedAt ?? performance.now()) - onset);
-          else nextErrors[el.id] = coerced.error;
-        } else if (el.type === 'TEXT_INPUT') {
-          const text = (draft.text ?? '').trim();
-          if (!text) {
-            if (el.required) nextErrors[el.id] = 'This answer is required.';
-            continue;
+          case 'TEXT_INPUT': {
+            const text = (draft.text ?? '').trim();
+            if (!text) {
+              if (el.required) nextErrors[el.id] = 'This answer is required.';
+              continue;
+            }
+            commit(el, text, draft.changedAt);
+            break;
           }
-          const coerced = coerceResponseValue(el, text);
-          if (coerced.ok) store(el, coerced.value, coerced.display, (draft.changedAt ?? performance.now()) - onset);
-          else nextErrors[el.id] = coerced.error.charAt(0).toUpperCase() + coerced.error.slice(1) + '.';
+          case 'MULTIPLE_CHOICE': {
+            const choice = draft.choice ?? [];
+            if (choice.length === 0) {
+              if (el.required) nextErrors[el.id] = 'Please choose an answer.';
+              continue;
+            }
+            commit(el, el.config.selection === 'single' ? choice[0] : choice, draft.changedAt);
+            break;
+          }
+          case 'DATE_TIME': {
+            if (!draft.date) {
+              if (el.required) nextErrors[el.id] = 'This answer is required.';
+              continue;
+            }
+            commit(el, draft.date, draft.changedAt);
+            break;
+          }
+          case 'CHOICE_GRID': {
+            const grid = Object.fromEntries(Object.entries(draft.grid ?? {}).filter(([, cols]) => cols.length > 0));
+            if (Object.keys(grid).length === 0) {
+              if (el.required) nextErrors[el.id] = 'Please answer the grid.';
+              continue;
+            }
+            commit(el, grid, draft.changedAt);
+            break;
+          }
+          default:
+            break;
         }
       }
       if (strict) setErrors(nextErrors);
@@ -319,7 +361,7 @@ function TrialScreen({
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [running, trial, respondInstant]);
 
-  const setDraft = useCallback((el: SliderRatingElement | TextInputElement, patch: DeferredDraft) => {
+  const setDraft = useCallback((el: ResponseElement, patch: DeferredDraft) => {
     if (endedRef.current) return;
     draftsRef.current = { ...draftsRef.current, [el.id]: { ...draftsRef.current[el.id], ...patch, changedAt: performance.now() } };
     setDrafts(draftsRef.current);
@@ -337,6 +379,9 @@ function TrialScreen({
     const d = drafts[el.id];
     if (el.type === 'SLIDER_RATING' && (d?.touched || !el.config.requireInteraction)) answeredNow.add(el.id);
     if (el.type === 'TEXT_INPUT' && (d?.text ?? '').trim().length > 0) answeredNow.add(el.id);
+    if (el.type === 'MULTIPLE_CHOICE' && (d?.choice?.length ?? 0) > 0) answeredNow.add(el.id);
+    if (el.type === 'DATE_TIME' && d?.date) answeredNow.add(el.id);
+    if (el.type === 'CHOICE_GRID' && Object.values(d?.grid ?? {}).some((cols) => cols.length > 0)) answeredNow.add(el.id);
   }
   const canSubmit = running && requiredResponsesSatisfied(trial, answeredNow);
   const mouseElement = responseElements.find((el) => el.type === 'MOUSE_CLICK');
@@ -359,8 +404,15 @@ function TrialScreen({
       case 'MOUSE_CLICK':
         return <p className="text-sm font-medium text-slate-500">{el.config.prompt}</p>;
       case 'MULTIPLE_CHOICE': {
+        if (isDeferredResponseElement(el)) {
+          return (
+            <ChoiceInput element={el} selected={drafts[el.id]?.choice ?? []} disabled={disabled} error={errors[el.id] ?? null} seed={seed} onChange={(ids) => setDraft(el, { choice: ids })} />
+          );
+        }
         const r = responses.get(el.id);
-        return <ChoiceInput element={el} selected={typeof r?.value === 'string' ? r.value : null} disabled={disabled} onSelect={(id) => respondInstant(el, id)} />;
+        return (
+          <ChoiceInput element={el} selected={typeof r?.value === 'string' ? [r.value] : []} disabled={disabled} error={null} seed={seed} onChange={(ids) => ids[0] && respondInstant(el, ids[0])} />
+        );
       }
       case 'YES_NO': {
         const r = responses.get(el.id);
@@ -381,6 +433,10 @@ function TrialScreen({
       }
       case 'TEXT_INPUT':
         return <TextAnswerInput element={el} value={drafts[el.id]?.text ?? ''} disabled={disabled} error={errors[el.id] ?? null} onChange={(v) => setDraft(el, { text: v })} />;
+      case 'DATE_TIME':
+        return <DateTimeInput element={el} value={drafts[el.id]?.date ?? ''} disabled={disabled} error={errors[el.id] ?? null} onChange={(v) => setDraft(el, { date: v })} />;
+      case 'CHOICE_GRID':
+        return <GridInput element={el} value={drafts[el.id]?.grid ?? {}} disabled={disabled} error={errors[el.id] ?? null} onChange={(v) => setDraft(el, { grid: v })} />;
     }
   };
 
@@ -419,6 +475,7 @@ function TrialScreen({
           >
             {trial.advanceMode === 'manual' ? 'Continue' : 'Submit'}
           </button>
+          {running && !canSubmit && <p className="mt-2 text-xs text-slate-500 text-center">Answer the required questions to continue.</p>}
         </div>
       )}
     </div>
