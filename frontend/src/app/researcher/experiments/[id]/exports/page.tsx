@@ -7,12 +7,27 @@ import { exportsApi } from '@/lib/api/exports';
 import { versionsApi } from '@/lib/api/experiments';
 import { errorMessage } from '@/lib/api/client';
 import { ExperimentHeader } from '@/components/researcher/ExperimentHeader';
-import type { ExportFormat, ExportJob } from '@/lib/types/api';
+import type { ExportFormat, ExportJob, ExportLayout } from '@/lib/types/api';
 
-const FORMATS: Array<{ format: ExportFormat; icon: React.ComponentType<{ className?: string }>; title: string; note: string }> = [
-  { format: 'CSV', icon: FileText, title: 'CSV', note: 'Tidy long format, one row per response — ready for R, Python, SPSS.' },
-  { format: 'XLSX', icon: FileSpreadsheet, title: 'Excel', note: 'Same rows as CSV plus a codebook sheet describing every column.' },
-  { format: 'JSON', icon: Braces, title: 'JSON', note: 'Nested sessions → trials → responses.' },
+const FORMATS: Array<{ format: ExportFormat; icon: React.ComponentType<{ className?: string }>; title: string; note: Record<ExportLayout, string> }> = [
+  {
+    format: 'CSV',
+    icon: FileText,
+    title: 'CSV',
+    note: { long: 'Tidy long format, one row per response — ready for R, Python, SPSS.', dataset: 'One row per participant, one column per question.' },
+  },
+  {
+    format: 'XLSX',
+    icon: FileSpreadsheet,
+    title: 'Excel',
+    note: { long: 'Same rows as CSV plus a codebook sheet describing every column.', dataset: 'Form responses sheet with filters, plus an “About this file” sheet.' },
+  },
+  { format: 'JSON', icon: Braces, title: 'JSON', note: { long: 'Nested sessions → trials → responses.', dataset: 'Rows keyed by question heading.' } },
+];
+
+const LAYOUTS: Array<{ layout: ExportLayout; title: string; note: string }> = [
+  { layout: 'long', title: 'Response log', note: 'One row per response with reaction times, scoring and timestamps.' },
+  { layout: 'dataset', title: 'Dataset (like a form response sheet)', note: 'One row per completed participant: timestamp, participant id and type, then one column per question.' },
 ];
 
 const STATUS_STYLE: Record<string, string> = {
@@ -28,6 +43,7 @@ export default function ExportsPage() {
   const queryClient = useQueryClient();
   const [versionId, setVersionId] = useState('');
   const [includeExcluded, setIncludeExcluded] = useState(false);
+  const [layout, setLayout] = useState<ExportLayout>('long');
   const [downloadError, setDownloadError] = useState<string | null>(null);
   const [downloading, setDownloading] = useState<string | null>(null);
 
@@ -39,7 +55,7 @@ export default function ExportsPage() {
   });
 
   const create = useMutation({
-    mutationFn: (format: ExportFormat) => exportsApi.create({ experimentId: id, format, filters: { includeExcluded, versionId: versionId || undefined } }),
+    mutationFn: (format: ExportFormat) => exportsApi.create({ experimentId: id, format, filters: { includeExcluded, versionId: versionId || undefined, layout } }),
     onSuccess: () => void queryClient.invalidateQueries({ queryKey: ['exports', id] }),
   });
 
@@ -60,6 +76,17 @@ export default function ExportsPage() {
       <ExperimentHeader id={id} />
       <section className="bg-white border rounded-xl p-5 space-y-4">
         <h2 className="font-semibold">New export</h2>
+        <div role="radiogroup" aria-label="Export layout" className="grid sm:grid-cols-2 gap-3">
+          {LAYOUTS.map((l) => (
+            <label key={l.layout} className={`flex items-start gap-3 p-3 border-2 rounded-xl cursor-pointer ${layout === l.layout ? 'border-blue-600 bg-blue-50' : 'border-slate-200 hover:border-slate-300'}`}>
+              <input type="radio" name="layout" className="mt-1 accent-blue-600" checked={layout === l.layout} onChange={() => setLayout(l.layout)} />
+              <span>
+                <span className="block font-medium text-sm">{l.title}</span>
+                <span className="block text-xs text-slate-500">{l.note}</span>
+              </span>
+            </label>
+          ))}
+        </div>
         <div className="flex flex-wrap gap-4 text-sm">
           <label>
             Version{' '}
@@ -88,7 +115,7 @@ export default function ExportsPage() {
             >
               <Icon className="w-6 h-6 text-slate-700 mb-2" />
               <div className="font-semibold">{title}</div>
-              <div className="text-xs text-slate-500">{note}</div>
+              <div className="text-xs text-slate-500">{note[layout]}</div>
             </button>
           ))}
         </div>
@@ -107,6 +134,7 @@ export default function ExportsPage() {
               <div>
                 <div className="font-medium text-sm">{job.fileName ?? `${job.format} export`}</div>
                 <div className="text-xs text-slate-500">
+                  {job.filters?.layout === 'dataset' ? 'Dataset · ' : 'Response log · '}
                   {new Date(job.createdAt).toLocaleString()}
                   {job.filters?.versionId ? ` · version filter` : ' · all versions'}
                   {job.filters?.includeExcluded ? ' · includes excluded' : ''}

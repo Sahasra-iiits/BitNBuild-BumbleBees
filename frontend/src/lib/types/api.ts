@@ -53,6 +53,8 @@ export interface AuthUser {
 export interface AuthResponse {
   user: AuthUser;
   accessToken: string;
+  /** Guest visits only: identifies this device so it gets the same guest back. */
+  deviceToken?: string;
 }
 
 export interface RegisterRequest {
@@ -385,6 +387,15 @@ export interface ParticipantRating {
 
 // Exports ---------------------------------------------------------------------
 
+export type ExportLayout = 'long' | 'dataset';
+
+export interface ExportFilters {
+  includeExcluded?: boolean;
+  versionId?: string;
+  /** "long": one row per response. "dataset": one row per submission, one column per question. */
+  layout?: ExportLayout;
+}
+
 export interface ExportJob {
   id: string;
   experimentId: string;
@@ -392,7 +403,7 @@ export interface ExportJob {
   status: ExportStatus;
   fileName: string | null;
   errorMessage: string | null;
-  filters: { includeExcluded?: boolean; versionId?: string } | null;
+  filters: ExportFilters | null;
   createdAt: string;
   completedAt: string | null;
   expiresAt: string | null;

@@ -109,31 +109,37 @@ export function ChoiceInput({
           : 'Select all that apply'
     : null;
 
+  // Long lists use two columns on wider screens so the whole question fits without scrolling.
+  const many = options.length > 5;
   return (
-    <fieldset className="w-full max-w-md space-y-3" disabled={disabled}>
-      {prompt && <legend className="text-xl font-medium text-slate-900 mb-3 text-center w-full">{prompt}</legend>}
-      {hint && <p className="text-sm text-slate-500 text-center">{hint}</p>}
-      {options.map((opt) => {
-        const isOn = selected.includes(opt.id);
-        return (
-          <button
-            key={opt.id}
-            type="button"
-            role={multiple ? 'checkbox' : undefined}
-            aria-checked={multiple ? isOn : undefined}
-            aria-pressed={multiple ? undefined : isOn}
-            onClick={() => onChange(multiple ? (isOn ? selected.filter((s) => s !== opt.id) : [...selected, opt.id]) : [opt.id])}
-            className={`flex items-center gap-3 w-full min-h-12 px-4 py-3 border-2 rounded-xl text-lg font-medium text-left transition-colors ${isOn ? 'border-blue-600 bg-blue-50 text-blue-800' : 'border-slate-200 text-slate-700 hover:border-blue-300 hover:bg-slate-50'}`}
-          >
-            {multiple && (
-              <span aria-hidden="true" className={`w-5 h-5 shrink-0 rounded border-2 flex items-center justify-center text-xs ${isOn ? 'bg-blue-600 border-blue-600 text-white' : 'border-slate-300'}`}>
-                {isOn ? '✓' : ''}
+    <fieldset className={`w-full ${many ? 'max-w-2xl' : 'max-w-xl'}`} disabled={disabled}>
+      {prompt && <legend className="w-full text-center text-lg sm:text-xl font-semibold leading-snug text-slate-900 mb-2 break-words">{prompt}</legend>}
+      {hint && <p className="text-sm text-slate-500 text-center mb-3">{hint}</p>}
+      <div className={`grid gap-2.5 ${prompt && !hint ? 'mt-3' : ''} ${many ? 'sm:grid-cols-2' : ''}`}>
+        {options.map((opt) => {
+          const isOn = selected.includes(opt.id);
+          return (
+            <button
+              key={opt.id}
+              type="button"
+              role={multiple ? 'checkbox' : undefined}
+              aria-checked={multiple ? isOn : undefined}
+              aria-pressed={multiple ? undefined : isOn}
+              onClick={() => onChange(multiple ? (isOn ? selected.filter((s) => s !== opt.id) : [...selected, opt.id]) : [opt.id])}
+              className={`flex items-center gap-3 w-full min-h-12 px-4 py-2.5 border-2 rounded-xl text-base sm:text-lg font-medium text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 ${isOn ? 'border-blue-600 bg-blue-50 text-blue-800' : 'border-slate-200 text-slate-700 hover:border-blue-300 hover:bg-slate-50'}`}
+            >
+              {/* Circle for one answer, square for several, as in paper and online forms. */}
+              <span
+                aria-hidden="true"
+                className={`w-5 h-5 shrink-0 border-2 flex items-center justify-center text-xs ${multiple ? 'rounded' : 'rounded-full'} ${isOn ? 'bg-blue-600 border-blue-600 text-white' : 'border-slate-300 bg-white'}`}
+              >
+                {isOn ? (multiple ? '✓' : <span className="w-2 h-2 rounded-full bg-white" />) : ''}
               </span>
-            )}
-            <span className="flex-1 text-center">{opt.label}</span>
-          </button>
-        );
-      })}
+              <span className="flex-1 min-w-0 break-words">{opt.label}</span>
+            </button>
+          );
+        })}
+      </div>
       <ErrorText error={error} />
     </fieldset>
   );

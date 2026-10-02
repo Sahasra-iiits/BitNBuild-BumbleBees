@@ -1,8 +1,8 @@
 import { api, apiFetch } from './client';
-import type { ExportFormat, ExportJob } from '../types/api';
+import type { ExportFilters, ExportFormat, ExportJob } from '../types/api';
 
 export const exportsApi = {
-  create: (data: { experimentId: string; format: ExportFormat; filters?: { includeExcluded?: boolean; versionId?: string }; idempotencyKey?: string }) =>
+  create: (data: { experimentId: string; format: ExportFormat; filters?: ExportFilters; idempotencyKey?: string }) =>
     api.post<ExportJob>('/exports', data),
   get: (id: string) => api.get<ExportJob>(`/exports/${id}`),
   list: (experimentId: string) => api.get<ExportJob[]>(`/exports?experimentId=${experimentId}`),
