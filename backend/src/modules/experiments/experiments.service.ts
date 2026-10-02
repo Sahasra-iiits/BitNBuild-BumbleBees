@@ -516,7 +516,7 @@ export class ExperimentService {
       }
     }
 
-    const attempts = await this.attemptSummary(experiment, participantProfileId);
+    const attempts = await this.attemptSummary(experiment, participantProfileId, prisma, participant.user.isGuest);
     if (!attempts.canStartNew && !attempts.activeSessionId) {
       return { eligible: false, code: 'ATTEMPT_LIMIT_REACHED', reason: attempts.reason, attempts };
     }
@@ -531,7 +531,9 @@ export class ExperimentService {
   static async attemptSummary(
     experiment: { id: string; attemptPolicy: string; maxAttempts: number },
     participantProfileId: string,
-    client: Prisma.TransactionClient = prisma
+    client: Prisma.TransactionClient = prisma,
+    /** Guests get one attempt per experiment (per device, since a device keeps its guest). */
+    guest = false
   ) {
     const sessions = await client.experimentSession.findMany({
       where: { experimentId: experiment.id, participantId: participantProfileId },
@@ -542,15 +544,21 @@ export class ExperimentService {
     const active = sessions.find((s) => s.status === 'STARTED' || s.status === 'IN_PROGRESS');
     const excluded = sessions.filter((s) => s.status === 'EXCLUDED').length;
 
-    if (experiment.attemptPolicy === 'ALLOW_ONE_ATTEMPT') {
+    if (experiment.attemptPolicy === 'ALLOW_ONE_ATTEMPT' || guest) {
       const used = completed + excluded > 0;
       return {
-        policy: experiment.attemptPolicy,
+        policy: guest ? 'ALLOW_ONE_ATTEMPT' : experiment.attemptPolicy,
         completed,
         maxAttempts: 1,
         activeSessionId: active?.id ?? null,
         canStartNew: !used && !active,
-        reason: used ? 'You have already participated in this experiment.' : active ? 'You have an unfinished session for this experiment.' : '',
+        reason: used
+          ? guest
+            ? 'This study has already been completed from this device.'
+            : 'You have already participated in this experiment.'
+          : active
+            ? 'You have an unfinished session for this experiment.'
+            : '',
       };
     }
     const limitReached = completed >= experiment.maxAttempts;

@@ -21,6 +21,7 @@ const createExportSchema = z.object({
     .object({
       includeExcluded: z.boolean().optional(),
       versionId: z.string().uuid().optional(),
+      layout: z.enum(['long', 'dataset']).optional(),
     })
     .optional(),
   idempotencyKey: z.string().max(100).optional(),

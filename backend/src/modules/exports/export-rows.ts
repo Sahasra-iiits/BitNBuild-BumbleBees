@@ -12,6 +12,8 @@ import type { TrialResponsePayload } from '../../shared/experiment';
 export interface ExportFilters {
   includeExcluded?: boolean;
   versionId?: string;
+  /** "long" (default): one row per response. "dataset": one row per submission, one column per question. */
+  layout?: 'long' | 'dataset';
 }
 
 export interface ExportRow {

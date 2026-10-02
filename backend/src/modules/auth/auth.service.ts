@@ -34,26 +34,48 @@ function tokenPayloadFor(user: TokenUser): TokenPayload {
 /** Guests get an internal address on a reserved domain (RFC 2606) so it can never receive mail or collide. */
 export const GUEST_EMAIL_DOMAIN = 'guest.invalid';
 
+/** Device tokens are random base64url strings issued by createGuest. */
+export function isDeviceToken(value: unknown): value is string {
+  return typeof value === 'string' && /^[A-Za-z0-9_-]{32,128}$/.test(value);
+}
+
 export class AuthService {
   /**
-   * Creates a guest participant: no email, password or demographics. The account
-   * only exists to own the guest's sessions; the browser keeps it via the refresh cookie.
+   * Starts a guest visit: no email, password or demographics. Each device keeps a
+   * random device token (cookie + browser storage); presenting it again returns the
+   * same guest, so ending the visit and coming back does not give a fresh attempt.
    */
-  public static async createGuest(ipAddress?: string, userAgent?: string) {
-    const user = await prisma.user.create({
-      data: {
-        email: `guest-${randomUUID()}@${GUEST_EMAIL_DOMAIN}`,
-        // A random secret nobody knows: guests cannot sign in with a password.
-        passwordHash: await hashPassword(randomBytes(32).toString('hex')),
-        role: ROLES.PARTICIPANT,
-        isGuest: true,
-        isEmailVerified: false,
-        participantProfile: {
-          create: { pseudonymousId: generatePseudonymousCode(), age: null, qualityRating: RATING.DEFAULT, totalRewardPoints: 0 },
-        },
-      },
-      include: { researcherProfile: true, participantProfile: true },
-    });
+  public static async createGuest(ipAddress?: string, userAgent?: string, presentedDeviceToken?: string | null) {
+    const deviceToken = isDeviceToken(presentedDeviceToken) ? presentedDeviceToken : randomBytes(32).toString('base64url');
+    const guestDeviceHash = hashString(deviceToken);
+    const include = { researcherProfile: true, participantProfile: true } as const;
+
+    let user = await prisma.user.findUnique({ where: { guestDeviceHash }, include });
+    if (user && (!user.isGuest || !user.isActive)) throw new UnauthorizedError('Guest access is not available on this device.');
+    const returning = !!user;
+    if (!user) {
+      try {
+        user = await prisma.user.create({
+          data: {
+            email: `guest-${randomUUID()}@${GUEST_EMAIL_DOMAIN}`,
+            // A random secret nobody knows: guests cannot sign in with a password.
+            passwordHash: await hashPassword(randomBytes(32).toString('hex')),
+            role: ROLES.PARTICIPANT,
+            isGuest: true,
+            isEmailVerified: false,
+            guestDeviceHash,
+            participantProfile: {
+              create: { pseudonymousId: generatePseudonymousCode(), age: null, qualityRating: RATING.DEFAULT, totalRewardPoints: 0 },
+            },
+          },
+          include,
+        });
+      } catch (error) {
+        // Two tabs started a guest visit for the same device at once: use the one that won.
+        if ((error as { code?: string }).code !== 'P2002') throw error;
+        user = await prisma.user.findUniqueOrThrow({ where: { guestDeviceHash }, include });
+      }
+    }
 
     const payload = tokenPayloadFor(user);
     const accessToken = signAccessToken(payload);
@@ -69,8 +91,9 @@ export class AuthService {
       resourceId: user.id,
       ipAddressRedacted: ipAddress,
       userAgent,
+      metadata: { returning },
     });
-    return { user: await this.getCurrentUser(user.id), accessToken, refreshToken };
+    return { user: await this.getCurrentUser(user.id), accessToken, refreshToken, deviceToken };
   }
 
   public static async register(input: RegisterInput, ipAddress?: string, userAgent?: string) {

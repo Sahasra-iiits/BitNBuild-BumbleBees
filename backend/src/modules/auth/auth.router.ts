@@ -3,7 +3,7 @@
 // ==============================================================================
 
 import { Router, Request, Response, NextFunction } from 'express';
-import { AuthService } from './auth.service';
+import { AuthService, isDeviceToken } from './auth.service';
 import { registerSchema, loginSchema } from './auth.schema';
 import { validate } from '../../common/middleware/validate';
 import { authenticate } from '../../common/middleware/authenticate';
@@ -59,7 +59,18 @@ authRouter.post(
   authLimiter,
   async (req: Request, res: Response, next: NextFunction) => {
     try {
-      const result = await AuthService.createGuest(req.ip, req.headers['user-agent']);
+      // The cookie is the main device marker; the copy in browser storage (sent in the
+      // body) covers browsers that block cross-site cookies.
+      const presented = req.cookies?.guest_device ?? (req.body as { deviceToken?: unknown } | undefined)?.deviceToken;
+      const result = await AuthService.createGuest(req.ip, req.headers['user-agent'], isDeviceToken(presented) ? presented : null);
+      res.cookie('guest_device', result.deviceToken, {
+        httpOnly: true,
+        secure: env.COOKIE_SECURE,
+        sameSite: env.COOKIE_SAMESITE,
+        domain: env.COOKIE_DOMAIN,
+        maxAge: 365 * 24 * 60 * 60 * 1000,
+        path: '/api/v1/auth',
+      });
       res.cookie('refresh_token', result.refreshToken, {
         httpOnly: env.COOKIE_HTTP_ONLY,
         secure: env.COOKIE_SECURE,
@@ -68,7 +79,7 @@ authRouter.post(
         maxAge: 7 * 24 * 60 * 60 * 1000,
         path: '/api/v1/auth',
       });
-      res.status(201).json({ user: result.user, accessToken: result.accessToken, refreshToken: result.refreshToken });
+      res.status(201).json({ user: result.user, accessToken: result.accessToken, refreshToken: result.refreshToken, deviceToken: result.deviceToken });
     } catch (error) {
       next(error);
     }

@@ -81,6 +81,8 @@ model User {
   role            Role
   /// Guest participants have no email or password; they can only take guest-enabled public experiments.
   isGuest         Boolean  @default(false)
+  /// SHA-256 of the guest's device token (cookie + browser storage); the same device gets the same guest back.
+  guestDeviceHash String?  @unique
   isEmailVerified Boolean  @default(false)
   isActive        Boolean  @default(true)
   createdAt       DateTime @default(now())
@@ -193,6 +195,7 @@ model Experiment {
   qualityFlags     QualityFlag[]
   rewards          ExperimentReward[]
   results          ExperimentResult[]
+  submissions      FormSubmission[]
   exportJobs       ExportJob[]
 
   @@index([researcherId])
@@ -396,6 +399,7 @@ model ExperimentSession {
   qualitySignals QualitySignal[]
   qualityFlags   QualityFlag[]
   rewards        ExperimentReward[]
+  submission     FormSubmission?
 
   @@index([experimentId])
   @@index([versionId])
@@ -617,4 +621,38 @@ model AuditEvent {
   @@index([createdAt])
   @@index([correlationId])
   @@map("audit_events")
+}
+
+// =============================================================================
+// Form submissions (one row per completed session, written by the server)
+// =============================================================================
+
+/// The participant's answers in spreadsheet form, written in the same database
+/// transaction that completes the session. The "dataset" export is generated from
+/// this table, so every exported row can be traced to a stored submission.
+model FormSubmission {
+  id              String   @id @default(uuid())
+  sessionId       String   @unique
+  experimentId    String
+  versionId       String
+  versionNumber   Int
+  /// Pseudonymous participant code (same as participant_id in exports).
+  participantCode String
+  /// "guest" or "registered".
+  participantType String
+  startedAt       DateTime
+  submittedAt     DateTime
+  durationSeconds Float
+  /// Correct answers among scored questions (null when nothing is scored).
+  score           Int?
+  maxScore        Int?
+  /// Ordered answers: [{ elementId, trial, question, answer }].
+  answers         Json
+  createdAt       DateTime @default(now())
+
+  session    ExperimentSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  experiment Experiment        @relation(fields: [experimentId], references: [id], onDelete: Cascade)
+
+  @@index([experimentId, submittedAt])
+  @@map("form_submissions")
 }

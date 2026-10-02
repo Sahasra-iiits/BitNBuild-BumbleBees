@@ -22,6 +22,7 @@ import { ExperimentService } from '../experiments/experiments.service';
 import { VersionService } from '../experiment-versions/versions.service';
 import { evaluateSessionQuality, resolveQualityRules, type RecordedTrial } from '../quality/quality-rules';
 import { applyRatingChange, type AppliedRatingChange } from '../quality/rating.service';
+import { writeSubmission } from '../submissions/submissions';
 import {
   coerceResponseValue,
   computeTrialOrder,
@@ -112,7 +113,7 @@ export class SessionService {
     }
 
     const version = await VersionService.getLatestPublished(experimentId);
-    const participant = await prisma.participantProfile.findUnique({ where: { id: participantProfileId } });
+    const participant = await prisma.participantProfile.findUnique({ where: { id: participantProfileId }, include: { user: { select: { isGuest: true } } } });
     if (!participant) throw new NotFoundError('Participant not found');
 
     const session = await prisma.$transaction(async (tx) => {
@@ -129,7 +130,7 @@ export class SessionService {
       if (!experiment || experiment.status !== EXPERIMENT_STATUS.PUBLISHED) {
         throw new ExperimentStateError('Experiment is not accepting participants');
       }
-      const attempts = await ExperimentService.attemptSummary(experiment, participantProfileId, tx);
+      const attempts = await ExperimentService.attemptSummary(experiment, participantProfileId, tx, participant.user.isGuest);
       if (!attempts.canStartNew) throw new ConflictError(attempts.reason || 'Attempt limit reached');
 
       return tx.experimentSession.create({
@@ -344,6 +345,9 @@ export class SessionService {
       });
       // Another request completed it first; that request applied reward and rating.
       if (transitioned.count === 0) return false;
+
+      // The spreadsheet-style row for the dataset export, stored with the completion.
+      await writeSubmission(tx, sessionId);
 
       await tx.participantProfile.update({
         where: { id: participantProfileId },
