@@ -30,6 +30,10 @@ export interface ImportedQuestion {
   display: ChoiceDisplay;
   required: boolean;
   shuffle: boolean;
+  element_type?: 'MULTIPLE_CHOICE' | 'SLIDER_RATING' | 'TEXT_INPUT';
+  min?: number;
+  max?: number;
+  step?: number;
 }
 
 export interface ImportIssue {
@@ -111,9 +115,9 @@ type QuestionKind = { selection: ChoiceSelection; display: ChoiceDisplay };
 function normalizeSelection(raw: unknown): QuestionKind | null | 'invalid' {
   if (raw === undefined || raw === null || raw === '') return null;
   const v = String(raw).trim().toLowerCase();
-  if (['multiple', 'multi', 'checkbox', 'checkboxes', 'many', 'multiple_answer', 'multiple-answer'].includes(v)) return { selection: 'multiple', display: 'buttons' };
+  if (['multiple', 'multi', 'checkbox', 'checkboxes', 'many', 'multiple_answer', 'multiple-answer', 'multiple_choice', 'multiple-choice'].includes(v)) return { selection: 'multiple', display: 'buttons' };
   if (['dropdown', 'select', 'list'].includes(v)) return { selection: 'single', display: 'dropdown' };
-  if (['single', 'radio', 'one', 'mcq', 'multiple_choice', 'multiple-choice', 'choice'].includes(v)) return { selection: 'single', display: 'buttons' };
+  if (['single', 'radio', 'one', 'mcq', 'single_choice', 'single-choice', 'choice'].includes(v)) return { selection: 'single', display: 'buttons' };
   return 'invalid';
 }
 

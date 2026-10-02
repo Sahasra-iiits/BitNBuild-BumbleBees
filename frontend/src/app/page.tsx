@@ -3,29 +3,29 @@ import Link from 'next/link';
 export default function LandingPage() {
   return (
     <div className="flex flex-col min-h-screen">
-      <header className="px-6 py-4 border-b bg-white flex items-center justify-between">
+      <header className="px-4 sm:px-6 py-4 border-b bg-white flex flex-wrap items-center justify-between gap-3">
         <div className="font-bold text-xl tracking-tight">CogniScale</div>
-        <nav className="flex gap-6">
-          <Link href="/experiments" className="text-sm font-medium hover:text-blue-600">Experiments</Link>
-          <Link href="/how-it-works" className="text-sm font-medium hover:text-blue-600">How It Works</Link>
+        <nav className="flex items-center gap-4 sm:gap-6">
+          <Link href="/experiments" className="hidden sm:block text-sm font-medium hover:text-blue-600">Experiments</Link>
+          <Link href="/how-it-works" className="hidden sm:block text-sm font-medium hover:text-blue-600">How It Works</Link>
           <Link href="/login" className="text-sm font-medium hover:text-blue-600">Login</Link>
-          <Link href="/register" className="text-sm font-medium bg-slate-900 text-white px-4 py-2 rounded-md hover:bg-slate-800">Sign Up</Link>
+          <Link href="/register" className="text-sm font-medium bg-slate-900 text-white px-3 sm:px-4 py-2 rounded-md hover:bg-slate-800">Sign Up</Link>
         </nav>
       </header>
       
-      <main className="flex-1 flex flex-col items-center justify-center text-center px-4 py-20">
-        <h1 className="text-5xl font-extrabold tracking-tight mb-6 max-w-3xl">
+      <main className="flex-1 flex flex-col items-center justify-center text-center px-4 py-12 sm:py-20">
+        <h1 className="text-4xl sm:text-5xl font-extrabold tracking-tight mb-6 max-w-3xl leading-tight">
           Build behavioral experiments.<br/>
           <span className="text-blue-600">Collect research-grade data.</span>
         </h1>
-        <p className="text-xl text-slate-600 max-w-2xl mb-10">
+        <p className="text-lg sm:text-xl text-slate-600 max-w-2xl mb-8 sm:mb-10 px-2">
           A secure, flexible, and high-precision SaaS platform empowering researchers to build and deploy complex behavioral experiments directly in the browser.
         </p>
-        <div className="flex gap-4">
-          <Link href="/register" className="bg-blue-600 text-white px-8 py-3 rounded-lg font-medium text-lg hover:bg-blue-700 shadow-sm">
+        <div className="flex flex-col sm:flex-row gap-4 w-full sm:w-auto px-4 sm:px-0">
+          <Link href="/register" className="bg-blue-600 text-white px-8 py-3 rounded-lg font-medium text-lg hover:bg-blue-700 shadow-sm w-full sm:w-auto">
             Create an Experiment
           </Link>
-          <Link href="/experiments" className="bg-white border border-slate-200 text-slate-900 px-8 py-3 rounded-lg font-medium text-lg hover:bg-slate-50 shadow-sm">
+          <Link href="/experiments" className="bg-white border border-slate-200 text-slate-900 px-8 py-3 rounded-lg font-medium text-lg hover:bg-slate-50 shadow-sm w-full sm:w-auto">
             Explore Experiments
           </Link>
         </div>
