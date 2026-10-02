@@ -114,7 +114,7 @@ export default function ExperimentRunner({ definition, order, startPosition = 0,
   const trial = definition.trials[order[position]];
 
   return (
-    <div className="fixed inset-0 z-50 bg-white text-slate-900 overflow-hidden">
+    <div className="fixed inset-0 z-50 bg-slate-50 text-slate-900 overflow-hidden">
       <TrialScreen key={`${position}:${trial.id}`} trial={trial} position={position} total={order.length} assets={assets} seed={seed} onEnd={handleTrialEnd} />
       {Overlay && <Overlay position={position} total={order.length} trial={trial} onSkip={skip} />}
     </div>
@@ -447,40 +447,41 @@ function TrialScreen({
       role="main"
       aria-label={`Trial ${position + 1} of ${total}`}
       style={{ visibility: running ? 'visible' : 'hidden' }}
-      className="absolute inset-0 overflow-y-auto overscroll-contain outline-none"
+      className="absolute inset-0 overflow-y-auto overscroll-contain outline-none bg-slate-50"
     >
       {/* min-h-full + justify-center: short trials are centred, tall ones grow and scroll from the top instead of being clipped. */}
-      <div className="relative min-h-full flex flex-col items-center justify-center gap-8 px-4 py-8 sm:px-10 sm:py-10">
+      <div className="relative min-h-full flex flex-col items-center justify-center py-8 px-4 sm:py-12">
         {mouseElement && (
           <div
-            className="absolute inset-0 cursor-crosshair"
+            className="fixed inset-0 cursor-crosshair z-0"
             aria-hidden="true"
             onClick={(e) => respondInstant(mouseElement, { x: e.clientX / window.innerWidth, y: e.clientY / window.innerHeight })}
           />
         )}
-        {trial.elements.map((el) => (
-          <div
-            key={el.id}
-            // In "click anywhere" trials, clicks on stimuli must reach the click layer below.
-            className={`relative flex flex-col items-center w-full ${mouseElement && el.type !== 'AUDIO_SOUND' ? 'pointer-events-none' : ''}`}
-          >
-            {renderElement(el)}
-          </div>
-        ))}
-        {(trial.advanceMode === 'manual' || usesSubmit) && (
-          // Sticky, so the button stays reachable at the bottom of long question pages.
-          <div className="sticky bottom-0 z-10 w-full flex flex-col items-center pt-4 pb-2 bg-linear-to-t from-white via-white/95 to-white/0">
-            <button
-              type="button"
-              disabled={!canSubmit}
-              onClick={() => submit(trial.advanceMode === 'manual' ? 'continue' : 'submit')}
-              className="min-w-40 min-h-12 px-8 py-3 bg-slate-900 text-white rounded-full font-semibold hover:bg-slate-800 disabled:opacity-40 disabled:cursor-not-allowed"
+        <div className="w-full max-w-3xl bg-white rounded-3xl shadow-sm border border-slate-200 p-6 sm:p-12 flex flex-col items-center gap-8 relative z-10">
+          {trial.elements.map((el) => (
+            <div
+              key={el.id}
+              // In "click anywhere" trials, clicks on stimuli must reach the click layer below.
+              className={`relative flex flex-col items-center w-full ${mouseElement && el.type !== 'AUDIO_SOUND' ? 'pointer-events-none' : ''}`}
             >
-              {trial.advanceMode === 'manual' ? 'Continue' : 'Submit'}
-            </button>
-            {running && !canSubmit && <p className="mt-2 text-xs text-slate-500 text-center">Answer the required questions to continue.</p>}
-          </div>
-        )}
+              {renderElement(el)}
+            </div>
+          ))}
+          {(trial.advanceMode === 'manual' || usesSubmit) && (
+            <div className="w-full flex flex-col items-center pt-6">
+              <button
+                type="button"
+                disabled={!canSubmit}
+                onClick={() => submit(trial.advanceMode === 'manual' ? 'continue' : 'submit')}
+                className="min-w-40 min-h-12 px-8 py-3 bg-slate-900 text-white rounded-full font-semibold hover:bg-slate-800 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+              >
+                {trial.advanceMode === 'manual' ? 'Continue' : 'Submit'}
+              </button>
+              {running && !canSubmit && <p className="mt-4 text-xs text-slate-500 text-center">Answer the required questions to continue.</p>}
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );
