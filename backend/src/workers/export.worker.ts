@@ -22,6 +22,10 @@ interface ExportJobData {
  * inline by the API request instead of silently sitting in a queue nobody reads.
  */
 export function startExportWorker() {
+  // Hackathon limit fix: Disable BullMQ to stop it from exhausting Upstash Redis free tier
+  // by constantly polling for jobs. Without the worker, exports will just run inline.
+  logger.warn('Redis BullMQ Worker disabled to save Upstash limits — export jobs will run inline');
+  return;
   if (worker) return;
   const connection = getRedis();
   if (connection.status !== 'ready') {
